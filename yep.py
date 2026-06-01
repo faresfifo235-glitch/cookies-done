@@ -131,8 +131,8 @@ def safe_send_message(chat_id, text, markup=None):
             else:
                 break
     return None
-    def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_name):
-    # تم تعديل المسافات هنا بدقة لمنع خطأ الـ IndentationError لقاعدة البيانات
+
+def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_name):
     if chat_id not in USER_DATABASE:
         USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
 
@@ -213,7 +213,8 @@ def send_txt_file(chat_id, accounts_list, original_filename):
             bot.send_document(chat_id, doc, caption=f"📁 ملف الحسابات الشغالة المجمعة الخريجة من الفحص الحالي 🔥")
         if os.path.exists(output_txt_path): os.remove(output_txt_path)
     except Exception as e: print(e)
-        def generate_main_keyboard(user_id):
+
+def generate_main_keyboard(user_id):
     points = USER_DATABASE.get(user_id, {}).get("points", 5)
     role = USER_DATABASE.get(user_id, {}).get("role", "MEMBER")
     markup = InlineKeyboardMarkup()
@@ -309,7 +310,6 @@ def unban_user_command(message):
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/unban` أو عادياً `/unban [الآيدي]`")
 
 def execute_dispense_logic(chat_id):
-    # تم تعديل المسافات هنا بدقة لمنع أي تعليق أو خطأ في البناء وسحب النقاط
     if chat_id not in USER_DATABASE:
         USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
         
@@ -349,7 +349,6 @@ def execute_dispense_logic(chat_id):
             user_markup = InlineKeyboardMarkup()
             user_markup.row_width = 2
             
-            # رابط الـ TV المحدث والموثق 100%
             user_markup.add(InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url), InlineKeyboardButton("📺 تفعيل شاشة TV", url="https://www.netflix.com/tv8"))
             user_markup.add(InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"), InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}"))
             
@@ -416,7 +415,6 @@ def handle_user_feedback(call):
             except: pass
         
     elif action == "no":
-        # حذف نهائي وفعلي وفوري من الذاكرة لضمان نقاء المخزن
         if target_cookie and target_cookie in VALID_COOKIES_POOL:
             VALID_COOKIES_POOL.remove(target_cookie)
             bot.answer_callback_query(call.id, "⚠️ تم تصفية وحذف هذا الحساب التالف من المخزن نهائياً.", show_alert=True)
@@ -427,7 +425,6 @@ def handle_user_feedback(call):
             
         try: bot.edit_message_text("❌ تم الإبلاغ عن هذا الرابط وحذفه من المخزن بنجاح وتنبيه المطور!", call.message.chat.id, call.message.message_id, reply_markup=None)
         except: pass
-            # --- 👑 قسم لوحة التحكم والإذاعة الخاصة بك يا فارس ---
 
 def open_admin_panel_msg(chat_id):
     markup = InlineKeyboardMarkup()
@@ -477,8 +474,6 @@ def clear_history_action(call):
     USED_COOKIES_HISTORY.clear()
     bot.answer_callback_query(call.id, "✅ تم مسح تاريخ التكرار بنجاح لإتاحة فحص الملفات القديمة مجدداً.", show_alert=True)
 
-# --- معالجة الملفات والأرشيف المضغوط العادية بأمان ---
-
 def unzip_and_extract_ids(zip_path, extract_to, password=None):
     try:
         with pyzipper.AESZipFile(zip_path) as zip_ref:
@@ -493,7 +488,7 @@ def unzip_and_extract_ids(zip_path, extract_to, password=None):
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             for nid in extract_clean_netflix_ids(f.read()):
                                 if nid not in all_cookies: all_cookies.append(nid)
-                    except: continue
+                        except: continue
         return True, all_cookies, None
     except RuntimeError as e:
         if 'encrypted' in str(e) or 'password' in str(e) or 'Bad password' in str(e): return False, [], "ENCRYPTED"
