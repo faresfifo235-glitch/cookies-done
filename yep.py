@@ -488,7 +488,8 @@ def unzip_and_extract_ids(zip_path, extract_to, password=None):
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             for nid in extract_clean_netflix_ids(f.read()):
                                 if nid not in all_cookies: all_cookies.append(nid)
-                        except: continue
+                    except Exception:
+                        continue
         return True, all_cookies, None
     except RuntimeError as e:
         if 'encrypted' in str(e) or 'password' in str(e) or 'Bad password' in str(e): return False, [], "ENCRYPTED"
