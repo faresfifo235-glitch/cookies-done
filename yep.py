@@ -132,8 +132,8 @@ def safe_send_message(chat_id, text, markup=None):
                 break
     return None
     def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_name):
-    if chat_id not in USER_DATABASE:
-        USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
+        if chat_id not in USER_DATABASE:
+           USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
 
     total_count = len(netflix_ids)
     active_scans[chat_id] = True
