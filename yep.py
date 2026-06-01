@@ -15,7 +15,7 @@ from urllib3.exceptions import InsecureRequestWarning
 TOKEN = '8890151932:AAHxYsWT-mikvf0U9WvcGbdKhTn4IMsyH4Y'
 bot = telebot.TeleBot(TOKEN)
 
-# 👑 إعدادات المطور الخاصة بك
+# 👑 إعدادات المطور الخاصة بك (فارس)
 DEVELOPER_CHAT_ID = 8713916851
 DEVELOPER_USERNAME = "farxxes" 
 
@@ -563,7 +563,7 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح ونقائه 100% بدون أي روابط ترويجية خارجية...")
+    print("🚀 تم تشغيل البوت بنجاح وهو نظيف تماماً وخالٍ من الاشتراكات الإجبارية والقنوات...")
     while True:
         try: bot.polling(none_stop=True, skip_pending=True)
         except: time.sleep(3)
