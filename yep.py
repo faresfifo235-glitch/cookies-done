@@ -254,6 +254,21 @@ def send_welcome(message):
         
     bot.reply_to(message, welcome_txt, reply_markup=generate_main_keyboard(chat_id))
 
+# 📌 أمر معرفة الآيدي للمستخدم
+@bot.message_handler(commands=['id'])
+@check_ban
+def send_user_id(message):
+    chat_id = message.chat.id
+    user_first_name = message.from_user.first_name
+    
+    id_text = (
+        f"👤 **معلومات الحساب الخاص بك:**\n\n"
+        f"• الاسم: **{user_first_name}**\n"
+        f"• الآيدي الخاص بك (ID): `{chat_id}`\n\n"
+        f"💡 _اضغط على الآيدي لنسخه تلقائياً وإرساله للمطور فارس إذا كنت تريد شحن نقاطك!_"
+    )
+    bot.reply_to(message, id_text, parse_mode="Markdown")
+
 @bot.message_handler(commands=['add'])
 def add_points_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID: return
@@ -556,7 +571,7 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 تم حل مشكلة التجمد! البوت يستقبل ويفحص لعدة أشخاص في نفس الوقت الآن...")
+    print("🚀 تم تشغيل البوت بنجاح ومزود بأمر /id وجاهز تمامًا للتجربة الفورية...")
     while True:
         try: bot.polling(none_stop=True, skip_pending=True)
         except: time.sleep(3)
