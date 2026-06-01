@@ -110,7 +110,7 @@ def check_netflix_cookie_detailed(netflix_id):
 def auto_clean_pool_job():
     global VALID_COOKIES_POOL
     while True:
-        time.sleep(43200) # 12 ساعة بالثواني
+        time.sleep(43200) 
         if VALID_COOKIES_POOL:
             print("🔄 جاري تنظيف المخزن تلقائياً من الحسابات الميتة...")
             still_valid = []
@@ -134,11 +134,8 @@ def safe_send_message(chat_id, text, markup=None):
                 break
     return None
 
-def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, source_name="Cookies_File.txt"):
-    if not netflix_ids:
-        safe_send_message(chat_id, "❌ لم يتم العثور على أي كوكيز صالحة للعمل.")
-        return
-
+# دالة المعالجة الفعلية التي تعمل في سلسلة (Thread) منفصلة تماماً لمنع التجميد
+def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_name):
     if chat_id not in USER_DATABASE:
         USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
 
@@ -198,6 +195,19 @@ def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, so
     safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر المحذوف: {dup_count}\n\n🎁 تم منحك **+{live_count}** نقاط مكافأة لمساعدتك في تعمير المخزن! رصيدك الحالي: {USER_DATABASE[chat_id]['points']} نقطة 🪙")
     if live_accounts_accumulator: send_txt_file(chat_id, live_accounts_accumulator, source_name)
 
+# دالة الاستدعاء الذكية التي تطلق السلسلة الخلفية لمنع التجميد
+def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, source_name="Cookies_File.txt"):
+    if not netflix_ids:
+        safe_send_message(chat_id, "❌ لم يتم العثور على أي كوكيز صالحة للعمل.")
+        return
+    
+    # تشغيل عملية الفحص في Thread مستقل تماماً
+    threading.Thread(
+        target=_threaded_cookies_check, 
+        args=(chat_id, netflix_ids, reply_to_message_id, source_name), 
+        daemon=True
+    ).start()
+
 def send_txt_file(chat_id, accounts_list, original_filename):
     try:
         clean_name = os.path.splitext(original_filename)[0]
@@ -227,7 +237,6 @@ def generate_main_keyboard(user_id):
         markup.add(InlineKeyboardButton("📬 نفدت نقاطك! تواصل مع المطور فارس للشحن 🫡", url=f"https://t.me/{DEVELOPER_USERNAME}"))
         
     markup.add(InlineKeyboardButton("📊 فحص المخزن والنقاط", callback_data="check_pool_status"))
-    # ❌ تم إزالة زر "رابط الإحالة لربح النقاط" من هنا بناءً على طلبك لضمان تجربة هادئة مع أصدقائك
     
     if user_id == DEVELOPER_CHAT_ID:
         markup.add(InlineKeyboardButton("👑 لوحة تحكم المطور السريّة", callback_data="open_admin_panel"))
@@ -237,31 +246,21 @@ def generate_main_keyboard(user_id):
 @check_ban
 def send_welcome(message):
     chat_id = message.chat.id
-    
-    is_new = False
     if chat_id not in USER_DATABASE:
         USER_DATABASE[chat_id] = {"points": 5, "username": message.from_user.username or "", "role": "MEMBER"}
-        is_new = True
-
-    if is_new:
-        welcome_txt = "واش لعزيز! مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً! كل نقطة تمنحك حساباً كاملاً."
+        welcome_txt = "واش لعزيز! مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً!"
     else:
         welcome_txt = "مرحباً بك مجدداً لعزيز في لوحة التحكم الخاصة بك المحدثة 👇"
         
     bot.reply_to(message, welcome_txt, reply_markup=generate_main_keyboard(chat_id))
 
-# ➕ خاصية شحن وزيادة النقاط للمييزين (متاحة لفارس فقط)
 @bot.message_handler(commands=['add'])
 def add_points_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID: return
     try:
         command_parts = message.text.split()
-        if message.reply_to_message:
-            target_id = message.reply_to_message.chat.id
-            amount = int(command_parts[1])
-        else:
-            amount = int(command_parts[1])
-            target_id = int(command_parts[2])
+        target_id = message.reply_to_message.chat.id if message.reply_to_message else int(command_parts[2])
+        amount = int(command_parts[1])
             
         if target_id not in USER_DATABASE: USER_DATABASE[target_id] = {"points": 5, "username": "", "role": "MEMBER"}
         USER_DATABASE[target_id]["points"] += amount
@@ -269,7 +268,6 @@ def add_points_command(message):
     except:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/add 10` أو رسالة عادية `/add 10 [الآيدي]`")
 
-# 💎 تعيين مستخدم VIP (متاحة لفارس فقط)
 @bot.message_handler(commands=['setvip'])
 def set_vip_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID: return
@@ -282,7 +280,6 @@ def set_vip_command(message):
     except:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/setvip` أو عادياً `/setvip [الآيدي]`")
 
-# 🚫 نظام الحظر الكامل (Ban / Unban) من فارس
 @bot.message_handler(commands=['ban'])
 def ban_user_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID: return
@@ -290,7 +287,7 @@ def ban_user_command(message):
         command_parts = message.text.split()
         target_id = message.reply_to_message.chat.id if message.reply_to_message else int(command_parts[1])
         BANNED_USERS.add(target_id)
-        bot.reply_to(message, f"🚫 تم حظر المستخدم `{target_id}` بنجاح من البوت.")
+        bot.reply_to(message, f"🚫 تم حظر المستخدم `{target_id}` بنجاح.")
     except:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/ban` أو عادياً `/ban [الآيدي]`")
 
@@ -314,7 +311,7 @@ def execute_dispense_logic(chat_id):
         return {"status": "no_points"}
         
     if not VALID_COOKIES_POOL:
-        return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أو كومبو أولاً لتعبئته."}
+        return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أولاً لتعبئته."}
     
     while VALID_COOKIES_POOL:
         current_cookie = VALID_COOKIES_POOL.pop(0)
@@ -339,7 +336,7 @@ def execute_dispense_logic(chat_id):
                 f"🪙 رصيدك المتبقي الحالي: {points_display}.\n"
                 f"📅 **تاريخ الفواتير القادم:** {date_str}\n\n"
                 f"🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n"
-                f"🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل التقييم ضروري لمساعدتنا 👇"
+                f"🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل 👇"
             )
             
             user_markup = InlineKeyboardMarkup()
@@ -399,9 +396,7 @@ def handle_user_feedback(call):
 
     if action == "yes":
         bot.answer_callback_query(call.id, "شكراً على رأيك وتحيا فارس 🫡🔥💖", show_alert=True)
-        try: 
-            bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة لعزيز!", 
-                                  call.message.chat.id, call.message.message_id, reply_markup=None)
+        try: bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة لعزيز!", call.message.chat.id, call.message.message_id, reply_markup=None)
         except: pass
         
         if target_cookie:
@@ -418,7 +413,7 @@ def handle_user_feedback(call):
         else:
             bot.answer_callback_query(call.id, "👌 تم حذفه مسبقاً.", show_alert=False)
             
-        try: bot.edit_message_text("❌ تم الإبلاغ عن هذا الرابط وحذفه من المخزن بنجاح! يمكنك طلب حساب آخر.", call.message.chat.id, call.message.message_id, reply_markup=None)
+        try: bot.edit_message_text("❌ تم الإبلاغ عن هذا الرابط وحذفه من المخزن بنجاح!", call.message.chat.id, call.message.message_id, reply_markup=None)
         except: pass
 
 # --- 👑 قسم لوحة التحكم والإذاعة للمطور فارس ---
@@ -561,7 +556,7 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح يا فارس وجاهز للتجربة مع أصدقائك بدون نظام الإحالة...")
+    print("🚀 تم حل مشكلة التجمد! البوت يستقبل ويفحص لعدة أشخاص في نفس الوقت الآن...")
     while True:
         try: bot.polling(none_stop=True, skip_pending=True)
         except: time.sleep(3)
