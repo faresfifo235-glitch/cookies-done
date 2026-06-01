@@ -16,7 +16,7 @@ bot = telebot.TeleBot(TOKEN)
 
 # 👑 إعدادات المطور الفخمة (فارس)
 DEVELOPER_CHAT_ID = 8713916851
-DEVELOPER_USERNAME = "Fares_auditing"  # <-- ضع هنا معرف التليجرام الخاص بك بدون @ ليضغطوا عليه للتواصل
+DEVELOPER_USERNAME = "farxxes"  # <-- تم تصحيح اليوزر الخاص بك بنجاح 🎯
 
 # تعطيل تحذيرات SSL
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
@@ -188,7 +188,10 @@ def generate_main_keyboard(user_id):
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
     
-    if points > 0:
+    # 👑 إذا كان المستخدم هو المطور (أنت)، يظهر زر السحب دائماً بنقاط لانهائية
+    if user_id == DEVELOPER_CHAT_ID:
+        markup.add(InlineKeyboardButton("🎁 سحب رابط نتفلكس (صلاحية المطور ♾️)", callback_data="dispense_live_link"))
+    elif points > 0:
         markup.add(InlineKeyboardButton(f"🎁 سحب رابط نتفلكس (تكلفة: 1 نقطة) 🪙", callback_data="dispense_live_link"))
     else:
         markup.add(InlineKeyboardButton("📬 نفدت نقاطك! تواصل مع المطور فارس للشحن 🫡", url=f"https://t.me/{DEVELOPER_USERNAME}"))
@@ -209,6 +212,34 @@ def send_welcome(message):
         
     bot.reply_to(message, welcome_txt, reply_markup=generate_main_keyboard(chat_id))
 
+# ➕ خاصية شحن وزيادة النقاط للمستخدمين (متاحة لفارس فقط)
+@bot.message_handler(commands=['add'])
+def add_points_command(message):
+    if message.chat.id != DEVELOPER_CHAT_ID:
+        bot.reply_to(message, "❌ هذا الأمر مخصص للمطور فارس فقط.")
+        return
+        
+    try:
+        command_parts = message.text.split()
+        if message.reply_to_message:
+            # الشحن عبر الرد على رسالة المستخدم
+            target_id = message.reply_to_message.chat.id
+            amount = int(command_parts[1])
+        else:
+            # الشحن عبر كتابة الآيدي: /add 50 [user_id]
+            amount = int(command_parts[1])
+            target_id = int(command_parts[2])
+            
+        if target_id not in USER_DATABASE:
+            USER_DATABASE[target_id] = {"points": 5, "username": ""}
+            
+        USER_DATABASE[target_id]["points"] += amount
+        bot.reply_to(message, f"✅ تم شحن حساب المستخدم بنجاح! تم إضافة **+{amount}** نقطة حقيقية للمخزن.")
+        try: bot.send_message(target_id, f"🎁 **إشعار شحن:** قام المطور فارس بشحن حسابك بـ **{amount}** نقاط إضافية! رصيدك الحالي هو: {USER_DATABASE[target_id]['points']} نقطة 🪙")
+        except: pass
+    except:
+        bot.reply_to(message, "⚠️ **طريقة الاستخدام الخطأ!**\nقم بالرد على رسالة المستخدم واكتب: `/add 10`\nأو أرسل مباشرة: `/add 10 [الأيدي]`", parse_mode="Markdown")
+
 @bot.message_handler(commands=['panel'])
 def admin_panel_command(message):
     if message.chat.id == DEVELOPER_CHAT_ID:
@@ -220,7 +251,8 @@ def execute_dispense_logic(chat_id):
     if chat_id not in USER_DATABASE:
         USER_DATABASE[chat_id] = {"points": 5, "username": ""}
         
-    if USER_DATABASE[chat_id]["points"] <= 0:
+    # 👑 استثناء المطور: لا يتم التحقق من النقاط الصفرية إذا كنت أنت صاحب البوت
+    if chat_id != DEVELOPER_CHAT_ID and USER_DATABASE[chat_id]["points"] <= 0:
         return {"status": "no_points"}
         
     if not VALID_COOKIES_POOL:
@@ -231,7 +263,9 @@ def execute_dispense_logic(chat_id):
         fresh_result = check_netflix_cookie_detailed(current_cookie)
         
         if fresh_result:
-            USER_DATABASE[chat_id]["points"] -= 1
+            # 👑 استثناء المطور: لا يتم خصم نقاط من حسابك الشخصي
+            if chat_id != DEVELOPER_CHAT_ID:
+                USER_DATABASE[chat_id]["points"] -= 1
             
             token = fresh_result["token"]
             expires = fresh_result["expires"]
@@ -244,9 +278,10 @@ def execute_dispense_logic(chat_id):
             bridge_login_url = f"https://nftokengen-7ik6.onrender.com/nf/netflix?cookie={encoded_cookie}"
             short_id = current_cookie[:20]
             
+            points_display = "♾️ وضع المطور نشط" if chat_id == DEVELOPER_CHAT_ID else f"{USER_DATABASE[chat_id]['points']} نقطة"
             success_text = (
                 f"🎉 **مبروك لعزيز! تفضل رابط نتفلكس الطازج الخاص بك** 🎉\n\n"
-                f"🪙 تم خصم 1 نقطة. رصيدك المتبقي: {USER_DATABASE[chat_id]['points']} نقطة.\n"
+                f"🪙 رصيدك المتبقي الحالي: {points_display}.\n"
                 f"📅 **تاريخ الفواتير القادم:** {date_str}\n\n"
                 f"🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n"
                 f"🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل التقييم ضروري لمساعدتنا 👇"
@@ -285,10 +320,10 @@ def dispense_account_on_button(call):
 def pool_status(call):
     chat_id = call.message.chat.id
     bot.answer_callback_query(call.id)
-    points = USER_DATABASE.get(chat_id, {}).get("points", 5)
-    bot.send_message(chat_id, f"📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}** نقطة 🪙\n📦 إجمالي الكوكيز المتوفر بالمخزن المشترك: **{len(VALID_COOKIES_POOL)}** حساب جاهز.", reply_markup=generate_main_keyboard(chat_id))
+    points = "♾️ (أنت صاحب البوت)" if chat_id == DEVELOPER_CHAT_ID else f"{USER_DATABASE.get(chat_id, {}).get('points', 5)} نقطة 🪙"
+    bot.send_message(chat_id, f"📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}**\n📦 إجمالي الكوكيز المتوفر بالمخزن المشترك: **{len(VALID_COOKIES_POOL)}** حساب جاهز.", reply_markup=generate_main_keyboard(chat_id))
 
-# --- 🛠️ نظام التقييم التلقائي المطور (شكراً واستمتع!) ---
+# --- 🛠️ نظام التقييم التلقائي المطور ---
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 def handle_user_feedback(call):
@@ -306,10 +341,7 @@ def handle_user_feedback(call):
             break
 
     if action == "yes":
-        # 💬 التنبيه العلوي (Alert) يظل يرحب بفارس
         bot.answer_callback_query(call.id, "شكراً على رأيك وتحيا فارس 🫡🔥💖", show_alert=True)
-        
-        # 📝 تعديل نص الرسالة في الشات لتصبح: شكراً واستمتع!
         try: 
             bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة لعزيز!", 
                                   call.message.chat.id, call.message.message_id, reply_markup=None)
@@ -471,7 +503,7 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 البوت جاهز ويعمل بالتعديل الجديد (شكراً واستمتع!)")
+    print("🚀 البوت جاهز تماماً الآن يا فارس بكافة الصلاحيات المطلقة واليوزر الصحيح...")
     while True:
         try: bot.polling(none_stop=True, skip_pending=True)
         except: time.sleep(3)
