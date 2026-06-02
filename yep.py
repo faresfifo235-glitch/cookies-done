@@ -187,7 +187,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
 encoded_cookie = urllib.parse.quote(full_cookie_string)
         
 # كود توزيع الضغط المعدل بمسافات صحيحة
-        import random
+import random
         api_hosts = [
             "https://nftokengen-7ik6.onrender.com",
             "https://netflixtokengenapi.onrender.com"
