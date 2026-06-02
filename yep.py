@@ -12,7 +12,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from urllib3.exceptions import InsecureRequestWarning
 
 # --- إعدادات البوت والتوكن ---
-TOKEN = '8890151932:AAHxYsWT-mikvf0U9WvcGbdKhTn4IMsyH4Y'
+TOKEN = '8890151932:AAGz6Ro-QJE5agXuosV26nR27L05UTj1iHA'
 bot = telebot.TeleBot(TOKEN)
 
 # 👑 إعدادات المطور الخاصة بك (فارس)
@@ -184,9 +184,9 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             
             full_cookie_string = f"NetflixId={netflix_id}"
             direct_netflix_url = "https://www.netflix.com/" if result["bypass"] else f"https://netflix.com/?nftoken={token}"
-          encoded_cookie = urllib.parse.quote(full_cookie_string)
+encoded_cookie = urllib.parse.quote(full_cookie_string)
         
-        # كود توزيع الضغط المعدل بمسافات صحيحة
+# كود توزيع الضغط المعدل بمسافات صحيحة
         import random
         api_hosts = [
             "https://nftokengen-7ik6.onrender.com",
