@@ -146,6 +146,9 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
     total_count = len(netflix_ids)
     active_scans[chat_id] = True
     
+    # تنظيف اسم الملف لمنع أخطاء الـ Markdown السفلية (_)
+    clean_source_name = source_name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+    
     live_accounts_accumulator = []
     stop_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إيقاف الفحص", callback_data=f"stop_scan_{chat_id}"))
     status = bot.send_message(chat_id, f"⏳ جاري فحص واستخراج الكوكيز...\n\n(تم العثور على {total_count} كوكيز وجاري المعالجة...)", reply_to_message_id=reply_to_message_id, reply_markup=stop_markup)
@@ -157,9 +160,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             safe_send_message(chat_id, f"🛑 تم إلغاء الفحص!\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}")
             return
 
-        if netflix_id in USED_COOKIES_HISTORY:
-            dup_count += 1
-            continue
+        is_duplicate = netflix_id in USED_COOKIES_HISTORY
 
         if index % 5 == 0 or index == total_count:
             try:
@@ -169,12 +170,13 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
 
         result = check_netflix_cookie_detailed(netflix_id)
         if result:
-            live_count += 1
-            USED_COOKIES_HISTORY.add(netflix_id)
-            
-            if netflix_id not in VALID_COOKIES_POOL:
-                VALID_COOKIES_POOL.append(netflix_id)
-                USER_DATABASE[chat_id]["points"] += 1
+            if is_duplicate:
+                dup_count += 1
+            else:
+                live_count += 1
+                USED_COOKIES_HISTORY.add(netflix_id)
+                if netflix_id not in VALID_COOKIES_POOL:
+                    VALID_COOKIES_POOL.append(netflix_id)
                 
             token = result["token"]
             expires = result["expires"]
@@ -187,7 +189,8 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             encoded_cookie = urllib.parse.quote(full_cookie_string)
             bridge_login_url = f"https://nftokengen-7ik6.onrender.com/nf/netflix?cookie={encoded_cookie}"
             
-            res_text = f"🌟 **PREMIUM ACCOUNT** 🌟\n\n📁 المصدر: {source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
+            dup_tag = " (مكرر شغال)" if is_duplicate else ""
+            res_text = f"🌟 **PREMIUM ACCOUNT{dup_tag}** 🌟\n\n📁 المصدر: {clean_source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
             txt_entry = f"Cookie: {full_cookie_string}\nURL: {direct_netflix_url}\n====================\n\n"
             live_accounts_accumulator.append(txt_entry)
             
@@ -195,11 +198,16 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             safe_send_message(chat_id, res_text, markup)
             time.sleep(1.2)
         else:
+            if is_duplicate:
+                # إذا كان مخزن قديماً ولكنه مات الآن، نقوم بتنظيفه
+                USED_COOKIES_HISTORY.discard(netflix_id)
+                if netflix_id in VALID_COOKIES_POOL:
+                    VALID_COOKIES_POOL.remove(netflix_id)
             dead_count += 1
         time.sleep(0.1)
 
     active_scans.pop(chat_id, None)
-    safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر المحذوف: {dup_count}\n\n🎁 تم منحك **+{live_count}** نقاط مكافأة لمساعدتك في تعمير المخزن! رصيدك الحالي: {USER_DATABASE[chat_id]['points']} نقطة 🪙")
+    safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {USER_DATABASE[chat_id]['points']} نقطة 🪙")
     if live_accounts_accumulator: 
         send_txt_file(chat_id, live_accounts_accumulator, source_name)
 
