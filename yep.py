@@ -184,17 +184,16 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             
             full_cookie_string = f"NetflixId={netflix_id}"
             direct_netflix_url = "https://www.netflix.com/" if result["bypass"] else f"https://netflix.com/?nftoken={token}"
-           encoded_cookie = urllib.parse.quote(full_cookie_string)
-            
-            # --- كود توزيع الضغط الجديد ---
-            import random
-            api_hosts = [
-                "https://nftokengen-7ik6.onrender.com",
-                "https://netflixtokengenapi.onrender.com"
-            ]
-            chosen_host = random.choice(api_hosts)
-            bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
-            # ---------------------------
+          encoded_cookie = urllib.parse.quote(full_cookie_string)
+        
+        # كود توزيع الضغط المعدل بمسافات صحيحة
+        import random
+        api_hosts = [
+            "https://nftokengen-7ik6.onrender.com",
+            "https://netflixtokengenapi.onrender.com"
+        ]
+        chosen_host = random.choice(api_hosts)
+        bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
             
             res_text = f"🌟 **PREMIUM ACCOUNT** 🌟\n\n📁 المصدر: {source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
             txt_entry = f"Cookie: {full_cookie_string}\nURL: {direct_netflix_url}\n====================\n\n"
