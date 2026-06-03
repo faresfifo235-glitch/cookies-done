@@ -2,7 +2,7 @@ import telebot
 import pyzipper
 import os
 import re
-import json
+import sqlite3
 import shutil
 import urllib.parse
 import time
@@ -36,63 +36,41 @@ BASE_TEMP_DIR = "final_output_temp"
 if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
+active_scans = {}
+
 # ====================================================
-# ✅ نظام الحفظ الدائم بملفات JSON
+# ✅ نظام الحفظ الدائم بقاعدة بيانات SQLite بدلاً من JSON
 # ====================================================
 DB_DIR = "database"
 if not os.path.exists(DB_DIR):
     os.makedirs(DB_DIR)
 
-DB_USERS_FILE      = os.path.join(DB_DIR, "users.json")
-DB_BANNED_FILE     = os.path.join(DB_DIR, "banned.json")
-DB_COOKIES_FILE    = os.path.join(DB_DIR, "cookies_pool.json")
-DB_HISTORY_FILE    = os.path.join(DB_DIR, "used_history.json")
-
+DB_FILE = os.path.join(DB_DIR, "bot_database.db")
 db_lock = threading.Lock()
 
-def load_json(path, default):
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return default
-
-def save_json(path, data):
+def db_execute(query, params=(), fetch=False, fetchall=False):
     with db_lock:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        if fetch:
+            res = cursor.fetchone()
+        elif fetchall:
+            res = cursor.fetchall()
+        else:
+            res = None
+        conn.commit()
+        conn.close()
+        return res
 
 def load_all_data():
-    global USER_DATABASE, BANNED_USERS, VALID_COOKIES_POOL, USED_COOKIES_HISTORY
-    raw_users = load_json(DB_USERS_FILE, {})
-    # JSON يحوّل المفاتيح لـ string، نحوّلها لأرقام
-    USER_DATABASE = {int(k): v for k, v in raw_users.items()}
-    BANNED_USERS  = set(load_json(DB_BANNED_FILE, []))
-    VALID_COOKIES_POOL   = load_json(DB_COOKIES_FILE, [])
-    USED_COOKIES_HISTORY = set(load_json(DB_HISTORY_FILE, []))
-    print(f"✅ تم تحميل البيانات: {len(USER_DATABASE)} مستخدم | {len(VALID_COOKIES_POOL)} كوكيز | {len(BANNED_USERS)} محظور")
-
-def save_users():
-    save_json(DB_USERS_FILE, {str(k): v for k, v in USER_DATABASE.items()})
-
-def save_banned():
-    save_json(DB_BANNED_FILE, list(BANNED_USERS))
-
-def save_cookies():
-    save_json(DB_COOKIES_FILE, VALID_COOKIES_POOL)
-
-def save_history():
-    save_json(DB_HISTORY_FILE, list(USED_COOKIES_HISTORY))
+    db_execute('''CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, points INTEGER, username TEXT, role TEXT)''')
+    db_execute('''CREATE TABLE IF NOT EXISTS cookies (cookie TEXT PRIMARY KEY)''')
+    db_execute('''CREATE TABLE IF NOT EXISTS history (cookie TEXT PRIMARY KEY)''')
+    db_execute('''CREATE TABLE IF NOT EXISTS banned (chat_id INTEGER PRIMARY KEY)''')
+    print("✅ تم تجهيز قاعدة بيانات SQLite بنجاح!")
 
 # تحميل البيانات عند بدء التشغيل
-USER_DATABASE        = {}
-BANNED_USERS         = set()
-VALID_COOKIES_POOL   = []
-USED_COOKIES_HISTORY = set()
-active_scans         = {}
-
 load_all_data()
 # ====================================================
 
@@ -123,16 +101,16 @@ def check_ban(func):
             chat_id = message.chat.id if hasattr(message, 'chat') else message.message.chat.id
         except Exception:
             chat_id = message.message.chat.id
-        if chat_id in BANNED_USERS:
+        
+        if db_execute("SELECT 1 FROM banned WHERE chat_id=?", (chat_id,), fetch=True):
             bot.send_message(chat_id, "❌ عذراً، تم حظرك من استخدام البوت من قبل الإدارة.")
             return
         return func(message, *args, **kwargs)
     return wrapper
 
 def ensure_user(chat_id, username=""):
-    if chat_id not in USER_DATABASE:
-        USER_DATABASE[chat_id] = {"points": 5, "username": username, "role": "MEMBER"}
-        save_users()
+    if not db_execute("SELECT 1 FROM users WHERE chat_id=?", (chat_id,), fetch=True):
+        db_execute("INSERT INTO users (chat_id, points, username, role) VALUES (?, ?, ?, ?)", (chat_id, 5, username, "MEMBER"))
 
 def extract_clean_netflix_ids(text):
     cleaned_ids = []
@@ -176,11 +154,11 @@ def check_netflix_cookie_detailed(netflix_id):
 def auto_clean_pool_job():
     while True:
         time.sleep(43200)
-        if VALID_COOKIES_POOL:
-            still_valid = [cookie for cookie in VALID_COOKIES_POOL if check_netflix_cookie_detailed(cookie)]
-            VALID_COOKIES_POOL.clear()
-            VALID_COOKIES_POOL.extend(still_valid)
-            save_cookies()
+        all_cookies = db_execute("SELECT cookie FROM cookies", fetchall=True)
+        if all_cookies:
+            for (cookie_val,) in all_cookies:
+                if not check_netflix_cookie_detailed(cookie_val):
+                    db_execute("DELETE FROM cookies WHERE cookie=?", (cookie_val,))
 
 threading.Thread(target=auto_clean_pool_job, daemon=True).start()
 
@@ -205,28 +183,29 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
     stop_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إيقاف الفحص", callback_data=f"stop_scan_{chat_id}"))
     status = bot.send_message(chat_id, f"⏳ جاري فحص واستخراج الكوكيز...\n\n(تم العثور على {total_count} كوكيز وجاري المعالجة...)", reply_to_message_id=reply_to_message_id, reply_markup=stop_markup)
     live_count, dead_count, dup_count = 0, 0, 0
+    
     for index, netflix_id in enumerate(netflix_ids, start=1):
         if not active_scans.get(chat_id, False):
             safe_send_message(chat_id, f"🛑 تم إلغاء الفحص!\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}")
             return
-        is_duplicate = netflix_id in USED_COOKIES_HISTORY
+        
+        is_duplicate = db_execute("SELECT 1 FROM history WHERE cookie=?", (netflix_id,), fetch=True) is not None
+        
         if index % 5 == 0 or index == total_count:
             try:
                 bot.edit_message_text(f"⏳ جاري الفحص: ({index}/{total_count})\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}", chat_id, status.message_id, reply_markup=stop_markup)
             except Exception:
                 pass
+                
         result = check_netflix_cookie_detailed(netflix_id)
         if result:
             if is_duplicate:
                 dup_count += 1
             else:
                 live_count += 1
-                USED_COOKIES_HISTORY.add(netflix_id)
-                if netflix_id not in VALID_COOKIES_POOL:
-                    VALID_COOKIES_POOL.append(netflix_id)
-                # ✅ حفظ فوري عند إضافة كوكيز جديد
-                save_cookies()
-                save_history()
+                db_execute("INSERT OR IGNORE INTO history (cookie) VALUES (?)", (netflix_id,))
+                db_execute("INSERT OR IGNORE INTO cookies (cookie) VALUES (?)", (netflix_id,))
+                
             token = result["token"]
             expires = result["expires"]
             if isinstance(expires, int) and len(str(expires)) == 13:
@@ -246,15 +225,14 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             time.sleep(1.2)
         else:
             if is_duplicate:
-                USED_COOKIES_HISTORY.discard(netflix_id)
-                if netflix_id in VALID_COOKIES_POOL:
-                    VALID_COOKIES_POOL.remove(netflix_id)
-                save_cookies()
-                save_history()
+                db_execute("DELETE FROM history WHERE cookie=?", (netflix_id,))
+                db_execute("DELETE FROM cookies WHERE cookie=?", (netflix_id,))
             dead_count += 1
         time.sleep(0.1)
+        
     active_scans.pop(chat_id, None)
-    safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {USER_DATABASE[chat_id]['points']} نقطة 🪙")
+    current_points = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
+    safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {current_points} نقطة 🪙")
     if live_accounts_accumulator:
         send_txt_file(chat_id, live_accounts_accumulator, source_name)
 
@@ -279,8 +257,12 @@ def send_txt_file(chat_id, accounts_list, original_filename):
         print(e)
 
 def generate_main_keyboard(user_id):
-    points = USER_DATABASE.get(user_id, {}).get("points", 5)
-    role = USER_DATABASE.get(user_id, {}).get("role", "MEMBER")
+    user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (user_id,), fetch=True)
+    if user_data:
+        points, role = user_data[0], user_data[1]
+    else:
+        points, role = 5, "MEMBER"
+
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
     markup.add(InlineKeyboardButton("🔍 فحص (ملف/نص/رابط)", callback_data="menu_check"))
@@ -301,7 +283,7 @@ def generate_main_keyboard(user_id):
 @check_ban
 def send_welcome(message):
     chat_id = message.chat.id
-    is_new = chat_id not in USER_DATABASE
+    is_new = db_execute("SELECT 1 FROM users WHERE chat_id=?", (chat_id,), fetch=True) is None
     ensure_user(chat_id, message.from_user.username or "")
     if is_new:
         welcome_txt = "مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً!"
@@ -327,16 +309,14 @@ def add_points_command(message):
             target_id = message.reply_to_message.from_user.id
             amount = int(command_parts[1])
         else:
-            # الاستخدام: /add [amount] [id]
             amount = int(command_parts[1])
             target_id = int(command_parts[2])
         ensure_user(target_id)
-        USER_DATABASE[target_id]["points"] += amount
-        save_users()  # ✅ حفظ فوري
-        bot.reply_to(message, f"✅ تم إضافة **+{amount}** نقطة بنجاح.\n🪙 رصيده الآن: {USER_DATABASE[target_id]['points']} نقطة", parse_mode="Markdown")
-        # إشعار المستخدم بالشحن
+        db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (amount, target_id))
+        new_points = db_execute("SELECT points FROM users WHERE chat_id=?", (target_id,), fetch=True)[0]
+        bot.reply_to(message, f"✅ تم إضافة **+{amount}** نقطة بنجاح.\n🪙 رصيده الآن: {new_points} نقطة", parse_mode="Markdown")
         try:
-            bot.send_message(target_id, f"🎉 تم شحن رصيدك!\n\n🪙 تمت إضافة **+{amount}** نقطة إلى حسابك.\n💰 رصيدك الحالي: **{USER_DATABASE[target_id]['points']} نقطة**", parse_mode="Markdown")
+            bot.send_message(target_id, f"🎉 تم شحن رصيدك!\n\n🪙 تمت إضافة **+{amount}** نقطة إلى حسابك.\n💰 رصيدك الحالي: **{new_points} نقطة**", parse_mode="Markdown")
         except Exception:
             pass
     except Exception:
@@ -350,8 +330,7 @@ def set_vip_command(message):
         command_parts = message.text.split()
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         ensure_user(target_id)
-        USER_DATABASE[target_id]["role"] = "VIP"
-        save_users()  # ✅ حفظ فوري
+        db_execute("UPDATE users SET role = 'VIP' WHERE chat_id=?", (target_id,))
         bot.reply_to(message, f"👑 تم ترقية المستخدم `{target_id}` إلى رتبة **VIP** بنجاح! سحب مجاني للأبد.")
         try:
             bot.send_message(target_id, "🎊 مبروك! تمت ترقيتك إلى رتبة **VIP** 💎\nيمكنك الآن سحب حسابات نتفلكس بشكل مجاني وبلا حدود!", parse_mode="Markdown")
@@ -367,8 +346,7 @@ def ban_user_command(message):
     try:
         command_parts = message.text.split()
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
-        BANNED_USERS.add(target_id)
-        save_banned()  # ✅ حفظ فوري
+        db_execute("INSERT OR IGNORE INTO banned (chat_id) VALUES (?)", (target_id,))
         bot.reply_to(message, f"🚫 تم حظر المستخدم `{target_id}` بنجاح.")
     except Exception:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/ban` أو عادياً `/ban [الآيدي]`")
@@ -380,27 +358,37 @@ def unban_user_command(message):
     try:
         command_parts = message.text.split()
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
-        BANNED_USERS.discard(target_id)
-        save_banned()  # ✅ حفظ فوري
+        db_execute("DELETE FROM banned WHERE chat_id=?", (target_id,))
         bot.reply_to(message, f"🟢 تم إلغاء حظر المستخدم `{target_id}` بنجاح.")
     except Exception:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/unban` أو عادياً `/unban [الآيدي]`")
 
 def execute_dispense_logic(chat_id):
     ensure_user(chat_id)
-    role = USER_DATABASE[chat_id]["role"]
-    if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and USER_DATABASE[chat_id]["points"] <= 0:
+    user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
+    points, role = user_data[0], user_data[1]
+    
+    if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and points <= 0:
         return {"status": "no_points"}
-    if not VALID_COOKIES_POOL:
+        
+    count = db_execute("SELECT COUNT(*) FROM cookies", fetch=True)[0]
+    if count == 0:
         return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أولاً لتعبئته."}
-    while VALID_COOKIES_POOL:
-        current_cookie = VALID_COOKIES_POOL.pop(0)
+        
+    while True:
+        cookie_row = db_execute("SELECT cookie FROM cookies LIMIT 1", fetch=True)
+        if not cookie_row:
+            break
+        current_cookie = cookie_row[0]
+        db_execute("DELETE FROM cookies WHERE cookie=?", (current_cookie,))
+        
         fresh_result = check_netflix_cookie_detailed(current_cookie)
         if fresh_result:
             if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
-                USER_DATABASE[chat_id]["points"] -= 1
-                save_users()  # ✅ حفظ فوري بعد خصم نقطة
-            save_cookies()    # ✅ حفظ الكوكيز بعد سحب
+                db_execute("UPDATE users SET points = points - 1 WHERE chat_id=?", (chat_id,))
+                points -= 1
+            
+            db_execute("INSERT INTO cookies (cookie) VALUES (?)", (current_cookie,))
             token = fresh_result["token"]
             expires = fresh_result["expires"]
             if isinstance(expires, int) and len(str(expires)) == 13:
@@ -412,20 +400,15 @@ def execute_dispense_logic(chat_id):
             chosen_host = random.choice(api_hosts)
             bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
             short_id = current_cookie[:20]
-            points_display = "♾️ وضع المطور" if chat_id == DEVELOPER_CHAT_ID else ("💎 رتبة VIP" if role == "VIP" else f"{USER_DATABASE[chat_id]['points']} نقطة")
+            points_display = "♾️ وضع المطور" if chat_id == DEVELOPER_CHAT_ID else ("💎 رتبة VIP" if role == "VIP" else f"{points} نقطة")
             success_text = (f"🎉 **تفدّل رابط نتفلكس الطازج الخاص بك** 🎉\n\n🪙 رصيدك المتبقي الحالي: {points_display}.\n📅 **تاريخ الفواتير القادم:** {date_str}\n\n🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل 👇")
             user_markup = InlineKeyboardMarkup()
             user_markup.row_width = 2
             user_markup.add(InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
             user_markup.add(InlineKeyboardButton("📺 كيف أستخدم الرابط؟", callback_data="ask_how_to_use"))
             user_markup.add(InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"), InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}"))
-            if current_cookie not in VALID_COOKIES_POOL:
-                VALID_COOKIES_POOL.append(current_cookie)
-            save_cookies()
+            
             return {"status": "success", "text": success_text, "markup": user_markup}
-        else:
-            save_cookies()
-            continue
     return {"status": "expired", "message": "❌ عذراً، انتهت صلاحية الكوكيز المتوفرة بالمخزن فجأة."}
 
 @bot.callback_query_handler(func=lambda call: call.data == "ask_how_to_use")
@@ -457,9 +440,15 @@ def menu_check_button(call):
 def pool_status(call):
     chat_id = call.message.chat.id
     bot.answer_callback_query(call.id)
-    role = USER_DATABASE.get(chat_id, {}).get("role", "MEMBER")
-    points = "♾️ (أنت صاحب البوت)" if chat_id == DEVELOPER_CHAT_ID else ("💎 وضع VIP (مفتوح)" if role == "VIP" else f"{USER_DATABASE.get(chat_id, {}).get('points', 5)} نقطة 🪙")
-    bot.send_message(chat_id, f"📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}**\n📦 إجمالي الكوكيز المتوفر بالمخزن المشترك: **{len(VALID_COOKIES_POOL)}** حساب جاهز.", reply_markup=generate_main_keyboard(chat_id))
+    user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
+    if user_data:
+        points_val, role = user_data[0], user_data[1]
+    else:
+        points_val, role = 5, "MEMBER"
+        
+    points = "♾️ (أنت صاحب البوت)" if chat_id == DEVELOPER_CHAT_ID else ("💎 وضع VIP (مفتوح)" if role == "VIP" else f"{points_val} نقطة 🪙")
+    pool_count = db_execute("SELECT COUNT(*) FROM cookies", fetch=True)[0]
+    bot.send_message(chat_id, f"📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}**\n📦 إجمالي الكوكيز المتوفر بالمخزن المشترك: **{pool_count}** حساب جاهز.", reply_markup=generate_main_keyboard(chat_id))
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
@@ -469,11 +458,11 @@ def handle_user_feedback(call):
     user_info = call.from_user
     username = f"@{user_info.username}" if user_info.username else "لا يوجد"
     chat_id = call.message.chat.id
-    target_cookie = None
-    for cookie in VALID_COOKIES_POOL:
-        if cookie.startswith(short_id):
-            target_cookie = cookie
-            break
+    
+    # البحث عن الكوكيز المطابق في القاعدة
+    target_cookie_row = db_execute("SELECT cookie FROM cookies WHERE cookie LIKE ?", (short_id + "%",), fetch=True)
+    target_cookie = target_cookie_row[0] if target_cookie_row else None
+
     if action == "yes":
         bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
         try:
@@ -487,9 +476,8 @@ def handle_user_feedback(call):
             except Exception:
                 pass
     elif action == "no":
-        if target_cookie and target_cookie in VALID_COOKIES_POOL:
-            VALID_COOKIES_POOL.remove(target_cookie)
-            save_cookies()  # ✅ حفظ بعد حذف كوكيز تالف
+        if target_cookie:
+            db_execute("DELETE FROM cookies WHERE cookie=?", (target_cookie,))
             bot.answer_callback_query(call.id, "⚠️ تم الإبلاغ وحذف الحساب التالف، جاري تعويضك فوراً...", show_alert=True)
             try:
                 bot.send_message(DEVELOPER_CHAT_ID, f"❌ تم حذف حساب ميت أبلغ عنه المستخدم: {user_info.first_name}\n🍪 `NetflixId={target_cookie}`")
@@ -513,7 +501,13 @@ def open_admin_panel_msg(chat_id):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📢 إرسال إذاعة جماعية (Broadcast)", callback_data="admin_broadcast"))
     markup.add(InlineKeyboardButton("🔄 تصفير الذاكرة والمكرر", callback_data="admin_clear_history"))
-    stats_text = (f"👑 **مرحباً بك يا مطور البوت (فارس) في لوحتك السرية** 👑\n\n📊 **إحصائيات البوت اللحظية:**\n👥 إجمالي المستخدمين المسجلين: {len(USER_DATABASE)}\n📦 إجمالي الحسابات الشغالة بالمخزن: {len(VALID_COOKIES_POOL)}\n🚫 إجمالي المحظورين: {len(BANNED_USERS)}\n✂️ إجمالي الكوكيز في مانع التكرار: {len(USED_COOKIES_HISTORY)}")
+    
+    users_count = db_execute("SELECT COUNT(*) FROM users", fetch=True)[0]
+    cookies_count = db_execute("SELECT COUNT(*) FROM cookies", fetch=True)[0]
+    banned_count = db_execute("SELECT COUNT(*) FROM banned", fetch=True)[0]
+    history_count = db_execute("SELECT COUNT(*) FROM history", fetch=True)[0]
+    
+    stats_text = (f"👑 **مرحباً بك يا مطور البوت (فارس) في لوحتك السرية** 👑\n\n📊 **إحصائيات البوت اللحظية:**\n👥 إجمالي المستخدمين المسجلين: {users_count}\n📦 إجمالي الحسابات الشغالة بالمخزن: {cookies_count}\n🚫 إجمالي المحظورين: {banned_count}\n✂️ إجمالي الكوكيز في مانع التكرار: {history_count}")
     bot.send_message(chat_id, stats_text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "open_admin_panel")
@@ -534,7 +528,8 @@ def process_broadcast_sending(message):
     broadcast_text = message.text
     sent_count = 0
     bot.send_message(DEVELOPER_CHAT_ID, "⏳ جاري بدء الإذاعة ونشر الرسالة لجميع المشتركين...")
-    for u_id in list(USER_DATABASE.keys()):
+    users = db_execute("SELECT chat_id FROM users", fetchall=True)
+    for (u_id,) in users:
         try:
             bot.send_message(u_id, f"📢 **إعلان من إدارة البوت:**\n\n{broadcast_text}", parse_mode="Markdown")
             sent_count += 1
@@ -545,8 +540,7 @@ def process_broadcast_sending(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_clear_history")
 def clear_history_action(call):
-    USED_COOKIES_HISTORY.clear()
-    save_history()  # ✅ حفظ بعد المسح
+    db_execute("DELETE FROM history")
     bot.answer_callback_query(call.id, "✅ تم مسح تاريخ التكرار بنجاح لإتاحة فحص الملفات القديمة مجدداً.", show_alert=True)
 
 def unzip_and_extract_ids(zip_path, extract_to, password=None):
@@ -640,21 +634,8 @@ def handle_stop_button(call):
     target_chat_id = int(call.data.split('_')[2])
     if target_chat_id in active_scans:
         active_scans[target_chat_id] = False
-        bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية بناءً على طلبك...")
-        try:
-            bot.edit_message_reply_markup(target_chat_id, call.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-
-@bot.message_handler(func=lambda message: True)
-@check_ban
-def handle_plain_text(message):
-    process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
+        bot.answer_callback_query(call.id, "🛑 جاري إيقاف الفحص...", show_alert=True)
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح مع نظام الحفظ الدائم (JSON Database)...")
-    while True:
-        try:
-            bot.polling(none_stop=True, skip_pending=True)
-        except Exception:
-            time.sleep(3)
+    print("🚀 البوت يعمل الآن بنظام SQLite وكل الدوال الأصلية متوفرة!")
+    bot.infinity_polling()
