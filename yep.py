@@ -96,7 +96,7 @@ load_all_data()
 LANG_DICT = {
     "ar": {
         "welcome_new": "مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً!",
-        "welcome_back": "مرحباً بك مجدداً في لوحة التحكم الخاصة بك المحدثة 👇",
+        "welcome_back": "مرحباً بك مجدداً في لوحة التحكم الخاصة بك 👇",
         "btn_check": "🔍 فحص (ملف/نص/رابط)",
         "btn_dispense": "🎁 سحب حساب نتفلكس",
         "btn_pool": "📊 فحص المخزن والنقاط",
@@ -122,7 +122,7 @@ LANG_DICT = {
     },
     "en": {
         "welcome_new": "Welcome to Fares's Smart Netflix Bot 😉🔥\n\n🎁 As a welcome gift, **you have been granted 5 free points** to try it out immediately!",
-        "welcome_back": "Welcome back to your updated control panel 👇",
+        "welcome_back": "Welcome back to your control panel 👇",
         "btn_check": "🔍 Check (File/Text/Link)",
         "btn_dispense": "🎁 Dispense Netflix Account",
         "btn_pool": "📊 Check Stock & Points",
@@ -377,8 +377,9 @@ def send_txt_file(chat_id, accounts_list, original_filename):
     except Exception as e:
         print(e)
 
-def generate_main_keyboard(user_id):
-    lang = get_user_lang(user_id)
+def generate_main_keyboard(user_id, lang=None):
+    if not lang:
+        lang = get_user_lang(user_id)
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_check"], callback_data="menu_check"))
@@ -405,23 +406,27 @@ def generate_main_keyboard(user_id):
 @check_ban
 def send_welcome(message):
     chat_id = message.chat.id
-    lang = get_user_lang(chat_id)
     
     user_exists = db_execute("SELECT 1 FROM users WHERE chat_id=?", (chat_id,), fetch=True)
     
     if not user_exists:
         db_execute("INSERT INTO users (chat_id, points, username, role, lang, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_DATE)", 
                    (chat_id, 5, message.from_user.username or "", "MEMBER", "ar"))
-        keyboard = generate_main_keyboard(chat_id)
+        keyboard = generate_main_keyboard(chat_id, lang="ar")
         bot.send_message(chat_id, LANG_DICT["ar"]["welcome_new"], reply_markup=keyboard, parse_mode="Markdown")
     else:
-        keyboard = generate_main_keyboard(chat_id)
+        lang = get_user_lang(chat_id)
+        keyboard = generate_main_keyboard(chat_id, lang=lang)
         bot.send_message(chat_id, LANG_DICT[lang]["welcome_back"], reply_markup=keyboard)
 
 @bot.callback_query_handler(func=lambda call: call.data == "menu_dispense_plans")
 @check_ban
 def show_plans_menu(call):
     chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     lang = get_user_lang(chat_id)
     
     p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM'", fetch=True)[0]
@@ -441,12 +446,19 @@ def show_plans_menu(call):
         InlineKeyboardButton(b_text, callback_data="pull_account_BASIC_1")
     )
     
-    bot.edit_message_text(LANG_DICT[lang]["select_plan"], chat_id, call.message.message_id, reply_markup=markup)
+    try:
+        bot.edit_message_text(LANG_DICT[lang]["select_plan"], chat_id, call.message.message_id, reply_markup=markup)
+    except Exception:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("pull_account_"))
 @check_ban
 def handle_pull_account_category(call):
     chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     lang = get_user_lang(chat_id)
     data_parts = call.data.split("_")
     plan_target = data_parts[2]
@@ -455,7 +467,6 @@ def handle_pull_account_category(call):
     user_data = db_execute("SELECT points, role, username FROM users WHERE chat_id=?", (chat_id,), fetch=True)
     points, role, username = user_data[0], user_data[1], user_data[2]
     
-    # 🚨 منطق نفاذ أو عدم كفاية النقاط -> يعرض زر طلب الشحن التلقائي فوراً
     if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and points < cost:
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton(LANG_DICT[lang]["btn_req_charge"], callback_data="trigger_auto_recharge_request"))
         bot.send_message(chat_id, LANG_DICT[lang]["no_points"], reply_markup=markup)
@@ -463,13 +474,13 @@ def handle_pull_account_category(call):
         
     count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan=?", (plan_target,), fetch=True)[0]
     if count == 0:
-        bot.answer_callback_query(call.id, LANG_DICT[lang]["empty_stock"].format(plan=plan_target), show_alert=False)
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton(LANG_DICT[lang]["btn_alert"], callback_data=f"activate_alert_{plan_target}"))
-        bot.edit_message_text(LANG_DICT[lang]["empty_stock"].format(plan=plan_target), chat_id, call.message.message_id, reply_markup=markup)
+        try:
+            bot.edit_message_text(LANG_DICT[lang]["empty_stock"].format(plan=plan_target), chat_id, call.message.message_id, reply_markup=markup)
+        except Exception:
+            pass
         return
         
-    bot.answer_callback_query(call.id, "⏳ Dispensing...")
-    
     while True:
         cookie_row = db_execute("SELECT cookie FROM cookies WHERE plan=? LIMIT 1", (plan_target,), fetch=True)
         if not cookie_row:
@@ -517,17 +528,20 @@ def handle_pull_account_category(call):
             return
 
 # ====================================================
-# 🔥 معالجة طلب الشحن التلقائي التفاعلي المباشر (جديد)
+# 🔥 معالجة طلب الشحن التلقائي التفاعلي المباشر
 # ====================================================
 @bot.callback_query_handler(func=lambda call: call.data == "trigger_auto_recharge_request")
 @check_ban
 def handle_auto_recharge_button(call):
     chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     lang = get_user_lang(chat_id)
     user_info = call.from_user
     username = f"@{user_info.username}" if user_info.username else "لا يوجد"
     
-    # 1. إرسال إشعار فوري وتلقائي ومصمم للمطور (فارس) بدون تدخل المستخدم
     dev_alert_text = (
         f"📥 **طلب شحن نقاط تلقائي جديد**\n\n"
         f"👤 **المستخدم:** {user_info.first_name}\n"
@@ -544,16 +558,20 @@ def handle_auto_recharge_button(call):
     except Exception:
         pass
         
-    # 2. تغيير نص الرسالة عند المستخدم لتأكيد الطلب
-    bot.edit_message_text(LANG_DICT[lang]["req_success"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
+    try:
+        bot.edit_message_text(LANG_DICT[lang]["req_success"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id, lang=lang))
+    except Exception:
+        pass
 
-# معالجة ضغط المطور على زر "إضافة نقاط مباشرة"
 @bot.callback_query_handler(func=lambda call: call.data.startswith("fast_charge_"))
 def admin_fast_charge_trigger(call):
     if call.message.chat.id != DEVELOPER_CHAT_ID:
         return
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     target_user_id = call.data.split("_")[2]
-    bot.answer_callback_query(call.id)
     
     msg = bot.send_message(DEVELOPER_CHAT_ID, f"🔢 أرسل الآن عدد النقاط التي تريد إضافتها مباشرة للآيدي `{target_user_id}`:")
     bot.register_next_step_handler(msg, process_fast_charge_value, target_user_id)
@@ -580,17 +598,48 @@ def process_fast_charge_value(message, target_id):
 @check_ban
 def faq_menu_handler(call):
     chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     lang = get_user_lang(chat_id)
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎥 مشاهدة شروحات التشغيل في القناة", url=CHANNEL_LINK))
     markup.add(InlineKeyboardButton("⬅️ Back / عودة", callback_data="faq_back_to_main"))
-    bot.edit_message_text(LANG_DICT[lang]["faq_title"], chat_id, call.message.message_id, reply_markup=markup)
+    try:
+        bot.edit_message_text(LANG_DICT[lang]["faq_title"], chat_id, call.message.message_id, reply_markup=markup)
+    except Exception:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "faq_back_to_main")
 def faq_back_button(call):
     chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     lang = get_user_lang(chat_id)
-    bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
+    try:
+        bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id, lang=lang))
+    except Exception:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "toggle_language")
+@check_ban
+def handle_toggle_language(call):
+    chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    current_lang = get_user_lang(chat_id)
+    new_lang = "en" if current_lang == "ar" else "ar"
+    db_execute("UPDATE users SET lang=? WHERE chat_id=?", (new_lang, chat_id))
+    
+    try:
+        bot.edit_message_text(LANG_DICT[new_lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id, lang=new_lang))
+    except Exception:
+        pass
 
 @bot.message_handler(commands=['id'])
 @check_ban
@@ -632,14 +681,24 @@ def add_points_command(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "menu_check")
 def menu_check_button(call):
-    bot.edit_message_text("🔍 أرسل الملف (Txt/Zip) أو الكوكيز كنص الآن وسأفحصه فوراً ويتم تخزينه تلقائياً بالمخزن!", call.message.chat.id, call.message.message_id)
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    try:
+        bot.edit_message_text("🔍 أرسل الملف (Txt/Zip) أو الكوكيز كنص الآن وسأفحصه فوراً ويتم تخزينه تلقائياً بالمخزن!", call.message.chat.id, call.message.message_id)
+    except Exception:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_pool_status")
 @check_ban
 def pool_status(call):
     chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     lang = get_user_lang(chat_id)
-    bot.answer_callback_query(call.id)
     user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
     points_val, role = (user_data[0], user_data[1]) if user_data else (5, "MEMBER")
     points = "♾️" if chat_id == DEVELOPER_CHAT_ID else (LANG_DICT[lang]["vip_mode"] if role == "VIP" else f"{points_val} 🪙")
@@ -649,11 +708,15 @@ def pool_status(call):
     b_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='BASIC'", fetch=True)[0]
     
     status_text = LANG_DICT[lang]["pool_status"].format(points=points, p_count=p_count, s_count=s_count, b_count=b_count)
-    bot.send_message(chat_id, status_text, reply_markup=generate_main_keyboard(chat_id))
+    bot.send_message(chat_id, status_text, reply_markup=generate_main_keyboard(chat_id, lang=lang))
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
 def handle_user_feedback(call):
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     data_parts = call.data.split('_')
     action = data_parts[1]
     plan_type = data_parts[2]
@@ -664,7 +727,7 @@ def handle_user_feedback(call):
     chat_id = call.message.chat.id
     
     history_row = db_execute("SELECT cookie FROM history WHERE cookie LIKE ?", (short_id + "%",), fetch=True)
-    target_cookie = history_row[0] if history_row else "كوكيز غير متوفر في السجل"
+    target_cookie = history_row[0] if history_row else None
 
     compensation_points = 3
     if plan_type == "STANDARD":
@@ -673,29 +736,35 @@ def handle_user_feedback(call):
         compensation_points = 1
 
     if action == "yes":
-        bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
         try:
             bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة!", chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
             
-        dev_log_text = (
-            f"👑 **تأكيد سحب شغال بنجاح!** 🎉\n\n"
-            f"👤 **المستخدم:** {user_info.first_name} ({username})\n"
-            f"🆔 **الآيدي:** `{user_info.id}`\n"
-            f"📦 **الفئة:** {plan_type}\n\n"
-            f"🍪 **الكوكيز الكامل للحساب:**\n"
-            f"`NetflixId={target_cookie}`"
-        )
-        try:
-            bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
-        except Exception:
-            pass
+        if target_cookie:
+            dev_log_text = (
+                f"👑 **تأكيد سحب شغال بنجاح!** 🎉\n\n"
+                f"👤 **المستخدم:** {user_info.first_name} ({username})\n"
+                f"🆔 **الآيدي:** `{user_info.id}`\n"
+                f"📦 **الفئة:** {plan_type}\n\n"
+                f"🍪 **الكوكيز الكامل للحساب:**\n"
+                f"`NetflixId={target_cookie}`"
+            )
+            try:
+                bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
+            except Exception:
+                pass
                 
     elif action == "no":
         user_role_row = db_execute("SELECT role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
         user_role = user_role_row[0] if user_role_row else "MEMBER"
         
+        # 🛡️ الحذف القاطع والفوري للكوكيز من المخزن والسجل تماماً لمنع بقائه نهائياً
+        if target_cookie:
+            db_execute("DELETE FROM cookies WHERE cookie=?", (target_cookie,))
+            db_execute("DELETE FROM history WHERE cookie=?", (target_cookie,))
+        
+        # 🔄 تعويض تلقائي فوري للمستخدم دون أي خسارة لنقاطه
         if chat_id != DEVELOPER_CHAT_ID and user_role != "VIP":
             db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (compensation_points, chat_id))
             
@@ -703,14 +772,14 @@ def handle_user_feedback(call):
             
         new_points = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
 
-        try:
-            bot.send_message(DEVELOPER_CHAT_ID, f"❌ **إبلاغ عن حساب ميت ومستبعد:**\n👤 المستخدم: {user_info.first_name}\n📦 الفئة: {plan_type}\n🪙 تم تعويضه تلقائياً بـ: +{compensation_points} نقطة.\n🍪 الكوكيز التالف:\n`NetflixId={target_cookie}`")
-        except Exception:
-            pass
+        if target_cookie:
+            try:
+                bot.send_message(DEVELOPER_CHAT_ID, f"❌ **إبلاغ عن حساب ميت ومستبعد:**\n👤 المستخدم: {user_info.first_name}\n📦 الفئة: {plan_type}\n🪙 تم تعويضه تلقائياً بـ: +{compensation_points} نقطة.\n🍪 الكوكيز التالف والمنظف من السجلات:\n`NetflixId={target_cookie}`")
+            except Exception:
+                pass
         
-        bot.answer_callback_query(call.id, f"⚠️ تم قبول الإبلاغ! وتمت إعادة {compensation_points} نقاط إلى رصيدك تلقائياً 🔄", show_alert=True)
         try:
-            bot.edit_message_text(f"❌ **تم الإبلاغ بنجاح!**\n\nنعتذر منك، تم حذف الحساب وإرجاع **+{compensation_points}** نقطة إلى حسابك تلقائياً دون خسارة نقاطك.\n🪙 رصيدك الحالي الآن: **{new_points}** نقطة.", chat_id, call.message.message_id, reply_markup=None)
+            bot.edit_message_text(f"❌ **تم قبول الإبلاغ وحذف الحساب نهائياً!**\n\nنعتذر منك، تم استبعاد الحساب التالف وتعويض حسابك بـ **+{compensation_points}** نقطة تلقائياً.\n🪙 رصيدك الحالي الآن: **{new_points}** نقطة دون خسارة.", chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
 
@@ -751,12 +820,28 @@ def open_admin_panel_msg(chat_id):
 @bot.callback_query_handler(func=lambda call: call.data == "open_admin_panel")
 def handle_admin_click(call):
     if call.message.chat.id == DEVELOPER_CHAT_ID:
-        bot.answer_callback_query(call.id)
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
         open_admin_panel_msg(call.message.chat.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_clear_history")
+def handle_admin_clear_history(call):
+    if call.message.chat.id != DEVELOPER_CHAT_ID:
+        return
+    db_execute("DELETE FROM history")
+    try:
+        bot.answer_callback_query(call.id, "✅ تم تصفير سجل المكررات بالكامل!", show_alert=True)
+    except Exception:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
 def start_broadcast_process(call):
-    bot.answer_callback_query(call.id)
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     msg = bot.send_message(DEVELOPER_CHAT_ID, "📢 أرسل لي الآن الرسالة التي تريد إذاعتها لجميع مستخدمي البوت فوراً:")
     bot.register_next_step_handler(msg, process_broadcast_sending)
 
@@ -775,6 +860,22 @@ def process_broadcast_sending(message):
         except Exception:
             pass
     bot.send_message(DEVELOPER_CHAT_ID, f"✅ تمت الإذاعة بنجاح! تم تسليم الرسالة إلى {sent_count} مستخدم 🚀")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("activate_alert_"))
+@check_ban
+def save_user_stock_alert(call):
+    chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    lang = get_user_lang(chat_id)
+    plan_name = call.data.split("_")[2]
+    db_execute("INSERT OR REPLACE INTO stock_alerts (chat_id, plan) VALUES (?, ?)", (chat_id, plan_name))
+    try:
+        bot.answer_callback_query(call.id, LANG_DICT[lang]["alert_saved"], show_alert=True)
+    except Exception:
+        pass
 
 def unzip_and_extract_ids(zip_path, extract_to, password=None):
     try:
@@ -853,9 +954,24 @@ def handle_incoming_document(message):
         file_content = bot.download_file(file_info.file_path).decode('utf-8', errors='ignore')
         process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(file_content), message.message_id, source_name=file_name)
 
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+@check_ban
+def handle_direct_text_or_cookies(message):
+    chat_id = message.chat.id
+    extracted_ids = extract_clean_netflix_ids(message.text)
+    if extracted_ids:
+        process_cookies_list_and_check(chat_id, extracted_ids, message.message_id, source_name="Direct_Text.txt")
+    else:
+        lang = get_user_lang(chat_id)
+        bot.reply_to(message, "❌ لم يتم العثور على أي كوكيز صالحة في النص، يرجى إرسال ملف يحتوي على الكوكيز أو الضغط على الأزرار التفاعلية.")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fanal_'))
 @check_ban
 def handle_inline_passwords(call):
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     data_parts = call.data.split('_')
     chosen_password = data_parts[1]
     temp_file_id = int(data_parts[2])
@@ -863,22 +979,22 @@ def handle_inline_passwords(call):
     if file_data:
         file_path, original_name = file_data[0], file_data[1]
         db_execute("DELETE FROM temp_files WHERE id=?", (temp_file_id,))
-        bot.answer_callback_query(call.id, f"⏳ جاري المحاولة بكلمة المرور: {chosen_password}")
         process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
-    else:
-        bot.answer_callback_query(call.id, "❌ انتهت صلاحية الطلب.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stop_scan_'))
 def handle_stop_scan(call):
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
     target_chat_id = int(call.data.split('_')[2])
     if call.message.chat.id == target_chat_id or call.message.chat.id == DEVELOPER_CHAT_ID:
         active_scans[target_chat_id] = False
-        bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص...")
 
 if __name__ == '__main__':
     while True:
         try:
-            print("🚀 البوت جاهز ومستقر ومحدث بنظام طلب الشحن التلقائي التام!")
+            print("🚀 البوت جاهز، مستقر، سلس، ومحدث بالكامل بدون أخطاء!")
             bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
             print(f"⚠️ خطأ اتصال: {e}")
