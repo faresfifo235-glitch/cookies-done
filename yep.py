@@ -38,6 +38,8 @@ if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
 active_scans = {}
+SPAM_TRACKER = {}         # ذاكرة مؤقتة لتتبع الإغراق (Anti-Spam)
+MAINTENANCE_MODE = False  # وضع الصيانة العام للتحكم فيه ديناميكياً
 
 # ====================================================
 # ✅ إعدادات قاعدة البيانات وضمان المخزن
@@ -186,6 +188,49 @@ def get_user_lang(chat_id):
     return res[0] if res else "ar"
 
 # ====================================================
+# 🛡️ نظام الحماية الذكي والتحقق من الصيانة (Middleware)
+# ====================================================
+def is_spammer(user_id):
+    current_time = time.time()
+    if user_id in SPAM_TRACKER:
+        last_time, count = SPAM_TRACKER[user_id]
+        if current_time - last_time < 1.5:  # معدل الأوامر أقل من ثانية ونصف
+            if count >= 4:
+                return True
+            SPAM_TRACKER[user_id] = (current_time, count + 1)
+        else:
+            SPAM_TRACKER[user_id] = (current_time, 1)
+    else:
+        SPAM_TRACKER[user_id] = (current_time, 1)
+    return False
+
+@bot.middleware_handler(update_types=['message', 'callback_query'])
+def check_maintenance_and_spam(bot_instance, update):
+    # التعرف على نوع الـ Update لاستخراج المعرفات
+    if hasattr(update, 'message'):
+        user_id = update.from_user.id
+        chat_id = update.message.chat.id
+    else:
+        user_id = update.from_user.id
+        chat_id = update.chat.id
+
+    # المطور مستثنى تماماً من القيود
+    if user_id == DEVELOPER_CHAT_ID:
+        return True
+
+    # 1. نظام مكافحة الإغراق (Anti-Spam)
+    if is_spammer(user_id):
+        bot_instance.send_message(chat_id, "❌ **نظام الحماية الذكي:** تم رصد إغراق في الأوامر (Spam)! يرجى الانتظار قليلاً.")
+        return False
+
+    # 2. فحص وضع الصيانة ديناميكياً
+    if MAINTENANCE_MODE:
+        bot_instance.send_message(chat_id, "⚙️ **البوت في وضع الصيانة حالياً** لتحديث الأنظمة من قبل المطور فارس. سنعود قريباً!")
+        return False
+
+    return True
+
+# ====================================================
 # 🔍 محرك الفحص والاتصال الذكي
 # ====================================================
 API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
@@ -259,11 +304,11 @@ def check_netflix_cookie_detailed(netflix_id):
 
             plan_type = "PREMIUM" 
             if "BASIC" in video_quality or "SD" in video_quality or "BASIC" in raw_response_text:
-                plan_type = "BASIC"
+                return "BASIC"
             elif "STANDARD" in video_quality or "HD" in video_quality or "STANDARD" in raw_response_text:
-                plan_type = "STANDARD"
+                return "STANDARD"
             elif "PREMIUM" in video_quality or "UHD" in video_quality or "4K" in raw_response_text:
-                plan_type = "PREMIUM"
+                return "PREMIUM"
 
             account_info = value_data.get("account", {}).get("token", {}).get("default", {})
             token = account_info.get("token")
@@ -272,10 +317,10 @@ def check_netflix_cookie_detailed(netflix_id):
             if token:
                 geoblock_status = value_data.get("geoBlockStatus", {})
                 is_blocked = geoblock_status.get("isBlocked", False)
-                geo_label = "Local" if is_blocked else "Universal"
+                geo_label = "Local" if is_blocked else "Universal"  # تصنيف متقدم للحظر الجغرافي
                 
                 profiles_list = value_data.get("profiles", [])
-                profile_label = "Empty" if len(profiles_list) <= 1 else "Full"
+                profile_label = "Empty" if len(profiles_list) <= 1 else "Full" # شاشات ممتلئة أم فارغة
                 
                 return {"token": token, "expires": expires, "bypass": False, "plan": plan_type, "geo": geo_label, "profile": profile_label}
         
@@ -305,12 +350,12 @@ def trigger_stock_alert_notifications(plan_name):
                 pass
         db_execute("DELETE FROM stock_alerts WHERE plan=?", (plan_name,))
 
-def check_low_stock_alert():
+def check_low_stock_alert(plan_target):
     try:
         limit = int(db_execute("SELECT value FROM settings WHERE key='low_stock_limit'", fetch=True)[0])
-        fresh_count = db_execute("SELECT COUNT(*) FROM cookies WHERE is_fresh=1 AND status='live'", fetch=True)[0]
+        fresh_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan=? AND is_fresh=1 AND status='live'", (plan_target,), fetch=True)[0]
         if fresh_count <= limit:
-            bot.send_message(DEVELOPER_CHAT_ID, f"⚠️ **تنبيه عاجل للمطور فارس:**\n\nالمخزن شارف على النفاذ! المتبقي {fresh_count} حسابات طازجة فقط. يرجى إعادة التعبئة قريباً.")
+            bot.send_message(DEVELOPER_CHAT_ID, f"⚠️ **تنبيه نقص المخزون للمطور فارس:**\n\nفئة ({plan_target}) أوشكت على النفاذ! المتبقي {fresh_count} قطع فقط بالمخزن الحالي.")
     except: pass
 
 def auto_clean_pool_job():
@@ -393,8 +438,8 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             time.sleep(1.2)
         else:
             if is_duplicate:
-                db_execute("DELETE FROM history WHERE cookie=?", (netflix_id,))
-                db_execute("DELETE FROM cookies WHERE cookie=?", (netflix_id,))
+                db_execute("DELETE FROM history WHERE cookie=?", (cookie_val,))
+                db_execute("DELETE FROM cookies WHERE cookie=?", (cookie_val,))
             dead_count += 1
         time.sleep(0.1)
         
@@ -525,6 +570,8 @@ def handle_pull_account_category(call):
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton(LANG_DICT[lang]["btn_alert"], callback_data=f"activate_alert_{plan_target}"))
         try: bot.edit_message_text(LANG_DICT[lang]["empty_stock"].format(plan=plan_target), chat_id, call.message.message_id, reply_markup=markup)
         except: pass
+        # 🔔 تنبيه نفاذ المخزون الفوري للمطور
+        bot.send_message(DEVELOPER_CHAT_ID, f"🚨 **مخزون فارغ تماماً:** حاول مستخدم سحب من قسم ({plan_target}) ولكنه فارغ!")
         return
         
     while True:
@@ -572,7 +619,7 @@ def handle_pull_account_category(call):
             )
             
             bot.send_message(chat_id, success_text, reply_markup=user_markup, parse_mode="Markdown")
-            check_low_stock_alert()
+            check_low_stock_alert(plan_target) # فحص مستمر لنقص الحسابات عن الحد المطلوب
             return
 
 # ====================================================
@@ -590,11 +637,9 @@ def handle_feedback_callbacks(call):
     if action == "yes":
         bot.edit_message_text("❤️ شكراً على تأكيدك! فرجة ممتعة يا غالي 🍿", chat_id, call.message.message_id, reply_markup=None)
     elif action == "no":
-        # رصد الحساب بناءً على الـ snippet المفرغ وتغيير حالته
         db_execute("UPDATE cookies SET status='dead' WHERE cookie LIKE ?", (f"{snippet}%",))
         db_execute("UPDATE users SET reports_count = reports_count + 1 WHERE chat_id=?", (chat_id,))
         
-        # حماية من المخرّبين تلقائياً إذا تجاوز البلاغات غير المنطقية
         rep_count = db_execute("SELECT reports_count FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
         if rep_count >= 4:
             bot.send_message(DEVELOPER_CHAT_ID, f"🛡️ **نظام الأمان الذكي:**\nالمستخدم `{chat_id}` قام بالإبلاغ عن {rep_count} حسابات متتالية كحساب ميت! قد يكون مخرباً.")
@@ -602,275 +647,180 @@ def handle_feedback_callbacks(call):
         bot.edit_message_text("⚠️ تم تسجيل بلاغك بنجاح! سيتم مراجعته وتعويضك تلقائياً بعد فحص فارس للحساب.", chat_id, call.message.message_id, reply_markup=None)
 
 # ====================================================
-# 🎫 نظام شحن واستلام أكواد التفعيل
+# 🎫 نظام شحن واستلام أكواد التفعيل (Redeem Codes)
 # ====================================================
 @bot.callback_query_handler(func=lambda call: call.data == "menu_redeem_code")
 def redeem_code_prompt(call):
     chat_id = call.message.chat.id
     try: bot.answer_callback_query(call.id)
     except: pass
-    lang = get_user_lang(chat_id)
-    msg = bot.send_message(chat_id, "✍️ أرسل كود التفعيل الخاص بك الآن لشحن رصيدك تلقائياً:")
-    bot.register_next_step_handler(msg, process_user_redeem)
+    
+    msg = bot.send_message(chat_id, "🎫 **يرجى إرسال كود التفعيل الخاص بك الآن:**\n(أو اكتب /cancel للإلغاء)")
+    bot.register_next_step_handler(msg, process_redeem_code_input)
 
-def process_user_redeem(message):
+def process_redeem_code_input(message):
     chat_id = message.chat.id
-    input_code = message.text.strip()
-    code_data = db_execute("SELECT points, is_used FROM redeem_codes WHERE code=?", (input_code,), fetch=True)
-    
+    code_text = message.text.strip()
+
+    if code_text == "/cancel" or code_text.lower() == "cancel":
+        bot.send_message(chat_id, "👋 تم إلغاء عملية تفعيل الكود.")
+        return
+
+    # التحقق من الكود في قاعدة البيانات
+    code_data = db_execute("SELECT points, is_used FROM redeem_codes WHERE code=?", (code_text,), fetch=True)
+
     if not code_data:
-        bot.send_message(chat_id, "⚠️ هذا الكود غير صحيح أو منتهي الصلاحية!")
+        bot.send_message(chat_id, "❌ عذراً، هذا الكود غير موجود أو غير صالح تماماً!")
         return
-    if code_data[1] == 1:
-        bot.send_message(chat_id, "❌ تم استخدام هذا الكود سابقاً!")
-        return
+
+    points_reward, is_used = code_data[0], code_data[1]
+
+    if is_used == 1:
+        bot.send_message(chat_id, "❌ عذراً، هذا الكود قد تم استخدامه وتفعيله مسبقاً!")
+    else:
+        # شحن النقاط للمستخدم وتعطيل الكود
+        db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (points_reward, chat_id))
+        db_execute("UPDATE redeem_codes SET is_used = 1 WHERE code=?", (code_text,))
         
-    points_to_add = code_data[0]
-    db_execute("UPDATE redeem_codes SET is_used=1 WHERE code=?", (input_code,))
-    db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (points_to_add, chat_id))
-    bot.send_message(chat_id, f"🎉 تم تفعيل الكود بنجاح! تم شحن **+{points_to_add} نقطة** إلى حسابك.")
+        current_points = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
+        bot.send_message(chat_id, f"🎉 🎉 تهانينا! تم تفعيل كودك بنجاح وشحن **+{points_reward}** نقطة في حسابك.\n🪙 رصيدك الكلي الحالي أصبح: {current_points} نقطة.")
 
 # ====================================================
-# 🔥 معالجة طلب الشحن التلقائي التفاعلي المباشر
-# ====================================================
-@bot.callback_query_handler(func=lambda call: call.data == "trigger_auto_recharge_request")
-@check_ban
-def handle_auto_recharge_button(call):
-    chat_id = call.message.chat.id
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    lang = get_user_lang(chat_id)
-    user_info = call.from_user
-    username = f"@{user_info.username}" if user_info.username else "لا يوجد"
-    
-    dev_alert_text = (
-        f"📥 **طلب شحن نقاط تلقائي جديد**\n\n"
-        f"👤 **المستخدم:** {user_info.first_name}\n"
-        f"🏷️ **اليوزر نيم:** {username}\n"
-        f"🆔 **الآيدي الخاص به:** `{chat_id}`\n"
-        f"💬 **الرسالة:** أريد شحن نقاط في البوت."
-    )
-    
-    admin_markup = InlineKeyboardMarkup()
-    admin_markup.add(InlineKeyboardButton("➕ إضافة نقاط مباشرة", callback_data=f"fast_charge_{chat_id}"))
-    
-    try: bot.send_message(DEVELOPER_CHAT_ID, dev_alert_text, reply_markup=admin_markup, parse_mode="Markdown")
-    except: pass
-        
-    try: bot.edit_message_text(LANG_DICT[lang]["req_success"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id, lang=lang))
-    except: pass
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("fast_charge_"))
-def admin_fast_charge_trigger(call):
-    if call.message.chat.id != DEVELOPER_CHAT_ID: return
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    target_user_id = call.data.split("_")[2]
-    
-    msg = bot.send_message(DEVELOPER_CHAT_ID, f"🔢 أرسل الآن عدد النقاط التي تريد إضافتها مباشرة للآيدي `{target_user_id}`:")
-    bot.register_next_step_handler(msg, process_fast_charge_value, target_user_id)
-
-def process_fast_charge_value(message, target_id):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
-    try:
-        amount = int(message.text)
-        db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (amount, target_id))
-        new_points = db_execute("SELECT points FROM users WHERE chat_id=?", (target_id,), fetch=True)[0]
-        
-        bot.reply_to(message, f"✅ **تم الشحن السريع بنجاح!**\n\n👤 الآيدي: `{target_id}`\n➕ المضاف: **+{amount}** نقطة\n🪙 الرصيد الإجمالي الحالي: **{new_points}** نقطة", parse_mode="Markdown")
-        try:
-            bot.send_message(target_id, f"🎉 **إشعار شحن رصيد!**\n\nقام المطور **فارس** بشحن حسابك تلقائياً.\n➕ الكمية المضافة: **+{amount}** نقطة.\n💰 رصيدك الإجمالي الحالي: **{new_points} نقطة** 🔥.", parse_mode="Markdown")
-        except: pass
-    except ValueError:
-        bot.send_message(DEVELOPER_CHAT_ID, "⚠️ خطأ: يرجى إدخال قيمة رقمية صحيحة فقط (مثال: 10).")
-
-# ====================================================
-# 👑 لوحة تحكم المطور الفوقية المتقدمة الشاملة
+# 👑 لوحة تحكم المطور والتحكم الديناميكي بالأسعار
 # ====================================================
 @bot.callback_query_handler(func=lambda call: call.data == "open_admin_panel")
-def open_admin_panel_handler(call):
-    if call.from_user.id != DEVELOPER_CHAT_ID: return
+def show_admin_panel(call):
+    chat_id = call.message.chat.id
+    if chat_id != DEVELOPER_CHAT_ID:
+        return
     try: bot.answer_callback_query(call.id)
     except: pass
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("💰 التحكم بأسعار الفئات", callback_data="adm_manage_prices"),
-        InlineKeyboardButton("🎫 توليد أكواد شحن", callback_data="adm_gen_codes")
-    )
-    markup.add(InlineKeyboardButton("🛡️ قائمة المشبوهين / التخريب", callback_data="adm_anti_abuse"))
-    markup.add(InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="faq_back_to_main"))
-    
-    bot.edit_message_text("👑 **مرحباً بك فارس في لوحة تحكم المطور الشاملة:**\nاختر أحد الخيارات التالية للإدارة الفورية:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "adm_manage_prices")
-def admin_manage_prices(call):
-    if call.from_user.id != DEVELOPER_CHAT_ID: return
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 1
+    
+    status_maintenance = "🔴 قيد التشغيل حالياً" if MAINTENANCE_MODE else "🟢 مغلق (البوت متاح للجميع)"
+    markup.add(
+        InlineKeyboardButton(f"🔄 وضع الصيانة: {status_maintenance}", callback_data="toggle_maintenance"),
+        InlineKeyboardButton("💰 تعديل الأسعار ديناميكياً", callback_data="admin_manage_prices"),
+        InlineKeyboardButton("🎫 توليد كود شحن (Redeem)", callback_data="admin_generate_redeem"),
+        InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="back_to_main")
+    )
+    bot.edit_message_text("🛠️ **أهلاً بك يا فارس في لوحة تحكم الإدارة السرية:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_manage_prices")
+def admin_manage_prices_menu(call):
+    chat_id = call.message.chat.id
+    if chat_id != DEVELOPER_CHAT_ID: return
     try: bot.answer_callback_query(call.id)
     except: pass
-    
-    p_p = db_execute("SELECT value FROM settings WHERE key='price_PREMIUM'", fetch=True)[0]
-    s_p = db_execute("SELECT value FROM settings WHERE key='price_STANDARD'", fetch=True)[0]
-    b_p = db_execute("SELECT value FROM settings WHERE key='price_BASIC'", fetch=True)[0]
-    
-    text = f"💰 **إدارة تسعير فئات نتفلكس الحالية:**\n\n1️⃣ بريميوم: {p_p} نقاط\n2️⃣ قياسي: {s_p} نقاط\n3️⃣ أساسي: {b_p} نقاط"
-    
+
+    p_price = db_execute("SELECT value FROM settings WHERE key='price_PREMIUM'", fetch=True)[0]
+    s_price = db_execute("SELECT value FROM settings WHERE key='price_STANDARD'", fetch=True)[0]
+    b_price = db_execute("SELECT value FROM settings WHERE key='price_BASIC'", fetch=True)[0]
+
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("⚙️ تعديل Premium", callback_data="edit_p_PREMIUM"),
-        InlineKeyboardButton("⚙️ تعديل Standard", callback_data="edit_p_STANDARD"),
-        InlineKeyboardButton("⚙️ تعديل Basic", callback_data="edit_p_BASIC")
+        InlineKeyboardButton(f"تعديل Premium ({p_price} نقاط)", callback_data="edit_price_PREMIUM"),
+        InlineKeyboardButton(f"تعديل Standard ({s_price} نقاط)", callback_data="edit_price_STANDARD"),
+        InlineKeyboardButton(f"تعديل Basic ({b_price} نقطة)", callback_data="edit_price_BASIC"),
+        InlineKeyboardButton("🔙 عودة للوحة التحكم", callback_data="open_admin_panel")
     )
-    markup.add(InlineKeyboardButton("🔙 العودة", callback_data="open_admin_panel"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.edit_message_text("💰 **اختر القسم الذي تريد تعديل سعره ديناميكياً فوراً داخل البوت:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_p_"))
-def admin_change_price_prompt(call):
-    if call.from_user.id != DEVELOPER_CHAT_ID: return
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_price_"))
+def request_new_price(call):
+    chat_id = call.message.chat.id
+    if chat_id != DEVELOPER_CHAT_ID: return
     try: bot.answer_callback_query(call.id)
     except: pass
     target_key = "price_" + call.data.split("_")[2]
+
+    msg = bot.send_message(chat_id, f"📝 **يرجى إرسال السعر الرقمي الجديد لفئة {call.data.split('_')[2]} مباشرة:**")
+    bot.register_next_step_handler(msg, save_new_dynamic_price, target_key)
+
+def save_new_dynamic_price(message, target_key):
+    chat_id = message.chat.id
+    if not message.text.isdigit():
+        bot.send_message(chat_id, "❌ خطأ! يجب إرسال رقم صحيح فقط. تم إلغاء التعديل.")
+        return
     
-    msg = bot.send_message(DEVELOPER_CHAT_ID, f"✍️ أرسل الآن السعر الجديد المطلوب لفئة `{call.data.split('_')[2]}`:")
-    bot.register_next_step_handler(msg, process_admin_price_save, target_key)
+    new_value = message.text.strip()
+    db_execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (target_key, new_value))
+    bot.send_message(chat_id, f"✅ تم تحديث السعر بنجاح وتعميمه ديناميكياً إلى: **{new_value}** نقاط!")
 
-def process_admin_price_save(message, target_key):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
-    if message.text.isdigit():
-        db_execute("UPDATE settings SET value=? WHERE key=?", (message.text, target_key))
-        bot.send_message(DEVELOPER_CHAT_ID, f"✅ تم تحديث سعر الفئة بنجاح إلى: **{message.text}** نقطة.")
-    else:
-        bot.send_message(DEVELOPER_CHAT_ID, "⚠️ إلغاء، يرجى إرسال أرقام فقط!")
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_gen_codes")
-def admin_gen_codes_prompt(call):
-    if call.from_user.id != DEVELOPER_CHAT_ID: return
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    msg = bot.send_message(DEVELOPER_CHAT_ID, "🔢 أرسل تفاصيل التوليد بالصيغة: `العدد-النقاط`\nمثال: `5-20` لتوليد 5 أكواد بقيمة 20 نقطة.")
-    bot.register_next_step_handler(msg, process_admin_code_generation)
-
-def process_admin_code_generation(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
-    try:
-        count, pts = map(int, message.text.split('-'))
-        generated_list = []
-        for _ in range(count):
-            secure_code = "FARES-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-            db_execute("INSERT INTO redeem_codes (code, points, is_used) VALUES (?, ?, 0)", (secure_code, pts))
-            generated_list.append(f"`{secure_code}`")
-        
-        bot.send_message(DEVELOPER_CHAT_ID, f"✅ **تم توليد الأكواد بنجاح ({count} كود بقيمة {pts} نقطة):**\n\n" + "\n".join(generated_list), parse_mode="Markdown")
-    except:
-        bot.send_message(DEVELOPER_CHAT_ID, "⚠️ خطأ في الصيغة! يرجى استخدام صيغة `العدد-النقاط` مثل `10-50`.")
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_anti_abuse")
-def admin_view_abusers(call):
-    if call.from_user.id != DEVELOPER_CHAT_ID: return
+@bot.callback_query_handler(func=lambda call: call.data == "admin_generate_redeem")
+def request_redeem_generation(call):
+    chat_id = call.message.chat.id
+    if chat_id != DEVELOPER_CHAT_ID: return
     try: bot.answer_callback_query(call.id)
     except: pass
     
-    suspicious = db_execute("SELECT chat_id, reports_count FROM users WHERE reports_count > 2 LIMIT 10", fetchall=True)
-    if not suspicious:
-        bot.edit_message_text("🛡️ **مكافحة التخريب:** لا يوجد أي مستخدم مشبوه حالياً في السجلات البوت آمن تماماً! 👍", call.message.chat.id, call.message.message_id, 
-                              reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 العودة", callback_data="open_admin_panel")))
+    msg = bot.send_message(chat_id, "🪙 **أدخل عدد النقاط التي تود شحنها داخل هذا الكود الجديد:**")
+    bot.register_next_step_handler(msg, create_redeem_code_final)
+
+def create_redeem_code_final(message):
+    chat_id = message.chat.id
+    if not message.text.isdigit():
+        bot.send_message(chat_id, "❌ خطأ! السعر يجب أن يكون رقمياً فقط.")
         return
         
-    text = "⚠️ **المشتركون الأعلى إرسالاً للبلاغات (رادار الفحص):**\n\n"
-    markup = InlineKeyboardMarkup()
-    for row in suspicious:
-        text += f"👤 ID: `{row[0]}` | 🛑 البلاغات المسجلة: {row[1]}\n"
-        markup.add(InlineKeyboardButton(f"🚫 حظر الآيدي {row[0]}", callback_data=f"ban_user_{row[0]}"))
-    markup.add(InlineKeyboardButton("🔙 العودة", callback_data="open_admin_panel"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("ban_user_"))
-def admin_execute_ban(call):
-    if call.from_user.id != DEVELOPER_CHAT_ID: return
-    target = call.data.split("_")[2]
-    db_execute("INSERT OR IGNORE INTO banned (chat_id) VALUES (?)", (target,))
-    bot.answer_callback_query(call.id, f"❌ تم إدراج {target} في القائمة السوداء بنجاح.", show_alert=True)
-    admin_view_abusers(call)
+    pts = int(message.text.strip())
+    random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    generated_code = f"FARES-{pts}PTS-{random_suffix}"
+    
+    db_execute("INSERT INTO redeem_codes (code, points, is_used) VALUES (?, ?, 0)", (generated_code, pts))
+    bot.send_message(chat_id, f"🎫 **تم إنشاء وتجهيز كود التفعيل بنجاح!**\n\nالكود: `{generated_code}`\nالقيمة: {pts} نقطة.", parse_mode="Markdown")
 
 # ====================================================
-
-@bot.callback_query_handler(func=lambda call: call.data == "check_pool_status")
-@check_ban
-def check_pool_status_handler(call):
-    chat_id = call.message.chat.id
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    lang = get_user_lang(chat_id)
-    
-    points = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
-    p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM' AND status='live' AND is_fresh=1", fetch=True)[0]
-    s_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='STANDARD' AND status='live' AND is_fresh=1", fetch=True)[0]
-    b_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='BASIC' AND status='live' AND is_fresh=1", fetch=True)[0]
-    
-    text = LANG_DICT[lang]["pool_status"].format(points=points, p_count=p_count, s_count=s_count, b_count=b_count)
-    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 عودة للقائمة", callback_data="faq_back_to_main"))
-    try: bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    except: pass
-
-@bot.callback_query_handler(func=lambda call: call.data == "open_faq_section")
-@check_ban
-def faq_menu_handler(call):
-    chat_id = call.message.chat.id
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    lang = get_user_lang(chat_id)
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🎥 مشاهدة شروحات التشغيل في القناة", url=CHANNEL_LINK))
-    markup.add(InlineKeyboardButton("⬅️ Back / عودة", callback_data="faq_back_to_main"))
-    try: bot.edit_message_text(LANG_DICT[lang]["faq_title"], chat_id, call.message.message_id, reply_markup=markup)
-    except: pass
-
-@bot.callback_query_handler(func=lambda call: call.data == "faq_back_to_main")
-def faq_back_button(call):
-    chat_id = call.message.chat.id
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    lang = get_user_lang(chat_id)
-    try: bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id, lang=lang))
-    except: pass
-
-@bot.callback_query_handler(func=lambda call: call.data == "toggle_language")
-@check_ban
-def handle_toggle_language(call):
-    chat_id = call.message.chat.id
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    current_lang = get_user_lang(chat_id)
-    new_lang = "en" if current_lang == "ar" else "ar"
-    db_execute("UPDATE users SET lang=? WHERE chat_id=?", (new_lang, chat_id))
-    
-    try: bot.edit_message_text(LANG_DICT[new_lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id, lang=new_lang))
-    except: pass
-
-@bot.message_handler(commands=['id'])
-@check_ban
-def send_user_id(message):
-    chat_id = message.chat.id
-    user_first_name = message.from_user.first_name
-    id_text = f"👤 **معلومات الحساب الخاص بك:**\n\n• الاسم: **{user_first_name}**\n• الآيدي الخاص بك (ID): `{chat_id}`\n\n💡 _اضغط على الآيدي لنسخه تلقائياً وإرساله للمطور فارس لشحن نقاطك!_"
-    bot.reply_to(message, id_text, parse_mode="Markdown")
-
+# 🔄 معالجات إضافية للعودة واللغات والصيانة
 # ====================================================
-# 🛠️ تكملة الدالة المبتورة ومعالجة الأوامر اليدوية
-# ====================================================
-@bot.message_handler(commands=['add'])
-def add_points_command(message):
-    if message.chat.id != DEVELOPER_CHAT_ID: return
-    try:
-        parts = message.text.split(" ")
-        target_id = int(parts[1])
-        amount = int(parts[2])
-        db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (amount, target_id))
-        bot.reply_to(message, f"✅ تم بنجاح إضافة {amount} نقطة يدويًا للمستفيد `{target_id}`.")
-    except Exception:
-        bot.reply_to(message, "⚠️ صيغة الأمر خاطئة. استخدم: `/add chat_id points`")
+@bot.callback_query_handler(func=lambda call: call.data in ["toggle_maintenance", "back_to_main", "toggle_language", "check_pool_status", "open_faq_section"])
+def handle_general_callbacks_and_maintenance(call):
+    chat_id = call.message.chat.id
+    global MAINTENANCE_MODE
+    try: bot.answer_callback_query(call.id)
+    except: pass
+    
+    if call.data == "toggle_maintenance":
+        if chat_id == DEVELOPER_CHAT_ID:
+            MAINTENANCE_MODE = not MAINTENANCE_MODE
+            show_admin_panel(call)
+            
+    elif call.data == "back_to_main":
+        lang = get_user_lang(chat_id)
+        keyboard = generate_main_keyboard(chat_id, lang=lang)
+        bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=keyboard)
+        
+    elif call.data == "toggle_language":
+        current_lang = get_user_lang(chat_id)
+        new_lang = "en" if current_lang == "ar" else "ar"
+        db_execute("UPDATE users SET lang=? WHERE chat_id=?", (new_lang, chat_id))
+        keyboard = generate_main_keyboard(chat_id, lang=new_lang)
+        bot.edit_message_text(LANG_DICT[new_lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=keyboard)
+        
+    elif call.data == "check_pool_status":
+        lang = get_user_lang(chat_id)
+        pts = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
+        p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM' AND status='live' AND is_fresh=1", fetch=True)[0]
+        s_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='STANDARD' AND status='live' AND is_fresh=1", fetch=True)[0]
+        b_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='BASIC' AND status='live' AND is_fresh=1", fetch=True)[0]
+        
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 العودة", callback_data="back_to_main"))
+        msg_text = LANG_DICT[lang]["pool_status"].format(points=pts, p_count=p_count, s_count=s_count, b_count=b_count)
+        bot.edit_message_text(msg_text, chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        
+    elif call.data == "open_faq_section":
+        lang = get_user_lang(chat_id)
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📺 القناة الرسمية", url=CHANNEL_LINK)).add(InlineKeyboardButton("🔙 العودة", callback_data="back_to_main"))
+        bot.edit_message_text(LANG_DICT[lang]["faq_title"], chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-# ------------------- تشغيل البوت المطور -------------------
-if __name__ == "__main__":
-    print(f"🚀 البوت المتكامل والشامل يعمل الآن بكفاءة قصوى... المطور الحالي: {DEVELOPER_USERNAME}")
-    bot.infinity_polling()
+@bot.callback_query_handler(func=lambda call: call.data.startswith("stop_scan_"))
+def handle_stop_scan(call):
+    target_id = int(call.data.split("_")[2])
+    active_scans.pop(target_id, None)
+    try: bot.answer_callback_query(call.id, "تم إرسال أمر إيقاف الفحص.")
+    except: pass
+
+# تشغيل البوت المستمر والدائم بدون انقطاع
+bot.infinity_polling()
