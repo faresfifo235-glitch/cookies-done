@@ -9,6 +9,7 @@ import time
 import requests
 import threading
 import random
+import json  # تم استدعاؤه لفك الردود المعقدة للـ API بدقة
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from urllib3.exceptions import InsecureRequestWarning
@@ -205,13 +206,11 @@ def check_netflix_cookie_detailed(netflix_id):
             data = response.json()
             value_data = data.get("value", {})
             
-            # محاولة قراءة جودة الفيديو أو الخطة المتاحة في ملف الاستجابة
             video_quality = str(value_data.get("videoQuality", "")).upper()
             raw_response_text = json.dumps(data).upper() if 'json' in response.headers.get('Content-Type', '') else response.text.upper()
             
             plan_type = "PREMIUM" # الفئة الافتراضية
             
-            # الفلترة الدقيقة بناء على جودة الـ Stream أو مسميات الخطط داخل الجيسون المرتجع
             if "BASIC" in video_quality or "SD" in video_quality or "BASIC" in raw_response_text:
                 plan_type = "BASIC"
             elif "STANDARD" in video_quality or "HD" in video_quality or "STANDARD" in raw_response_text:
@@ -306,7 +305,6 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
                 live_count += 1
                 newly_added_plans.add(plan_detected)
                 db_execute("INSERT OR IGNORE INTO history (cookie) VALUES (?)", (netflix_id,))
-                # حفظ الفئة المصنفة بشكل صحيح هنا
                 db_execute("INSERT OR REPLACE INTO cookies (cookie, plan) VALUES (?, ?)", (netflix_id, plan_detected))
                 
             token = result["token"]
@@ -552,28 +550,57 @@ def send_user_id(message):
     id_text = (f"👤 **معلومات الحساب الخاص بك:**\n\n• الاسم: **{user_first_name}**\n• الآيدي الخاص بك (ID): `{chat_id}`\n\n💡 _اضغط على الآيدي لنسخه تلقائياً وإرساله للمطور فارس إذا كنت تريد شحن نقاطك!_")
     bot.reply_to(message, id_text, parse_mode="Markdown")
 
+# ====================================================
+# 🔥 تحديث دالة زيادة النقاط مع معالجة الأخطاء والإشعار التلقائي
+# ====================================================
 @bot.message_handler(commands=['add'])
 def add_points_command(message):
     if message.chat.id != DEVELOPER_CHAT_ID:
         return
     try:
         command_parts = message.text.split()
+        
+        # 1. إذا قام المطور بالرد على رسالة المستخدم
         if message.reply_to_message:
-            target_id = message.reply_to_message.from_user.id
+            if len(command_parts) < 2:
+                bot.reply_to(message, "⚠️ خطأ: يرجى كتابة عدد النقاط، مثال: `/add 10` بالرد على رسالته.", parse_mode="Markdown")
+                return
             amount = int(command_parts[1])
+            target_id = message.reply_to_message.from_user.id
+            
+        # 2. إذا كتب المطور الأمر والآيدي يدوياً 
         else:
+            if len(command_parts) < 3:
+                bot.reply_to(message, "⚠️ خطأ: يرجى تحديد النقاط والآيدي، مثال: `/add 10 12345678`", parse_mode="Markdown")
+                return
             amount = int(command_parts[1])
             target_id = int(command_parts[2])
+            
         ensure_user(target_id)
         db_execute("UPDATE users SET points = points + ? WHERE chat_id=?", (amount, target_id))
-        new_points = db_execute("SELECT points FROM users WHERE chat_id=?", (target_id,), fetch=True)[0]
-        bot.reply_to(message, f"✅ تم إضافة **+{amount}** نقطة بنجاح.\n🪙 رصيده الآن: {new_points} نقطة", parse_mode="Markdown")
+        
+        new_points_row = db_execute("SELECT points FROM users WHERE chat_id=?", (target_id,), fetch=True)
+        new_points = new_points_row[0] if new_points_row else amount
+        
+        bot.reply_to(message, f"✅ **تمت إضافة النقاط بنجاح!**\n\n👤 المستهدف: `{target_id}`\n➕ الكمية: **+{amount}** نقطة\n🪙 رصيده الإجمالي الآن: **{new_points}** نقطة", parse_mode="Markdown")
+        
+        # 🔥 إرسال إشعار فوري للمستخدم المستفيد
         try:
-            bot.send_message(target_id, f"🎉 تم شحن رصيدك!\n\n🪙 تمت إضافة **+{amount}** نقطة إلى حسابك.\n💰 رصيدك الحالي: **{new_points} نقطة**", parse_mode="Markdown")
+            notification_msg = (
+                f"🎉 **إشعار شحن رصيد!** 🎉\n\n"
+                f"🎁 قام المطور **فارس** بإضافة نقاط إلى حسابك.\n"
+                f"➕ الكمية المضافة: **+{amount}** نقطة.\n"
+                f"💰 رصيدك الحالي الشغال: **{new_points} نقطة**.\n\n"
+                f"🍿 يمكنك الآن سحب الحسابات مباشرة من القائمة!"
+            )
+            bot.send_message(target_id, notification_msg, parse_mode="Markdown")
         except Exception:
-            pass
-    except Exception:
-        bot.reply_to(message, "⚠️ الاستخدام: بالرد `/add 10` أو رسالة عادية `/add 10 [الآيدي]`")
+            bot.send_message(DEVELOPER_CHAT_ID, f"⚠️ تم تحديث نقاطه في القاعدة، لكن تعذر إرسال الإشعار له (قد يكون حظر البوت).")
+            
+    except ValueError:
+        bot.reply_to(message, "⚠️ خطأ: يرجى التأكد من كتابة الأرقام بشكل صحيح (النقاط أو الآيدي يجب أن تكون أرقاماً فقط).")
+    except Exception as e:
+        bot.reply_to(message, f"❌ حدث خطأ غير متوقع: {str(e)}")
 
 @bot.message_handler(commands=['setvip'])
 def set_vip_command(message):
@@ -828,11 +855,10 @@ def handle_stop_scan(call):
         active_scans[target_chat_id] = False
         bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية...")
 
-import json # تم استدعاء json لفك الردود المعقدة للـ API بدقة
 if __name__ == '__main__':
     while True:
         try:
-            print("🚀 البوت يعمل الآن مع فلترة وتصنيف دقيق للمخزن حسب الفئات (Premium/Standard/Basic)...")
+            print("🚀 البوت يعمل الآن بكامل التعديلات (تصفية دقيقة للمخزن وإشعار شحن فوري بنجاح)...")
             bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
             print(f"⚠️ حدث خطأ في اتصال تيليجرام: {e}")
